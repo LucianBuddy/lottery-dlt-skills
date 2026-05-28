@@ -296,7 +296,7 @@ class DLTPatternRecognizer:
                 'counter': consecutive_counter,
                 'total': total,
                 'type': 'categorical',
-                'weight': 0.10,
+                'weight': 0.20,
                 'desc': '连号'
             },
             'sum': {

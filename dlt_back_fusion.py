@@ -564,6 +564,8 @@ class BackZoneFusion:
     ) -> List[Tuple[List[int], Dict[str, float]]]:
         """
         生成n个后区推荐对+各维度评分详情
+
+        【方案C】集成隔期重号评分：上上期后区号码加权重。
         
         返回每个推荐号码对的详细评分，包括：
         - 基础池评分：hot_score, cold_score, balance_score, game_score
@@ -581,6 +583,9 @@ class BackZoneFusion:
         """
         # 获取融合后的号码评分
         fused_scores = self.fuse_back_dimensions()
+
+        # 【方案C】获取隔期重号评分
+        skip_repeat_scores = self._compute_skip_repeat_back_scores()
 
         # 生成候选并筛选
         candidates = self.generate_back_candidates(n=100)
@@ -621,6 +626,17 @@ class BackZoneFusion:
                 0.7 * scores['fusion_score'] +
                 0.3 * scores['fused_score']
             )
+
+            # 【方案C】隔期重号修正：上上期后区号码加权
+            skip_boost = 0.0
+            for n in combo:
+                skip_boost += skip_repeat_scores.get(n, 0.0)
+            skip_boost = skip_boost / 2.0  # 归一化到0~1
+            if skip_boost > 0:
+                # 隔期重号作为独立加分维度，权重10%
+                final_score = final_score * 0.9 + skip_boost * 0.1
+                scores['skip_repeat_score'] = round(skip_boost, 4)
+
             scores['final_score'] = round(final_score, 4)
 
             scored.append((combo, scores, final_score))
@@ -641,6 +657,56 @@ class BackZoneFusion:
                 break
 
         return result
+
+    # ------------------------------------------------------------------
+    # 【方案C】后区隔期重号模式检测
+    # ------------------------------------------------------------------
+
+    def _compute_skip_repeat_back_scores(self) -> Dict[int, float]:
+        """
+        计算后区隔期重号评分。
+
+        核心逻辑：
+        - 检查draws[-2](上上期)的后区号码
+        - 如果这两个号码在当前期候选中有隔期回归信号，给予额外权重
+        - 适用范围：历史中后区隔期重号（同一组号码隔期重现）的常见模式
+
+        Returns:
+            Dict[int, float]: {后区号码: 隔期重号评分(0~1)}
+        """
+        scores: Dict[int, float] = {n: 0.0 for n in range(1, 13)}
+
+        if len(self.draws) < 3:
+            return scores
+
+        skip_back = set(self.draws[-2][1])  # 上上期后区号码
+        prev_back = set(self.draws[-1][1])  # 上期后区号码
+
+        # 只有上上期和上期后区不同时，隔期回归才值得关注
+        # 如果已经连续两期相同，第三期回归概率增加
+        if skip_back == prev_back:
+            # 上上期=上期相同：第三期继续该组号码的概率很低
+            # 但仍给轻微权重以防连续
+            for n in skip_back:
+                scores[n] = 0.3
+        else:
+            # 上上期≠上期：上上期号码隔期回归的概率较高
+            for n in skip_back:
+                # 上期没有出现的上上期号码，隔期回归概率最高
+                if n not in prev_back:
+                    scores[n] = 0.85
+                else:
+                    # 上期也出现了（连续三期出现的号码），概率较低
+                    scores[n] = 0.25
+
+            # 上上期后区的对称号/邻号也有一定概率回归
+            for n in skip_back:
+                # 邻号
+                for adj in [n - 1, n + 1]:
+                    if 1 <= adj <= 12 and adj not in skip_back and adj not in prev_back:
+                        scores[adj] = max(scores[adj], 0.4)
+
+        return scores
 
     def get_pool_summary(self) -> Dict[str, Any]:
         """

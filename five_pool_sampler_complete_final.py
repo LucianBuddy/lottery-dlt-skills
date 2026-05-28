@@ -43,6 +43,9 @@ class FivePoolSampler:
         
         # 热冷评分缓存
         self.hot_cold_cache = {'front': {}, 'back': {}}
+
+        # 区间权重（供DLTFusionComplete的区间漂移检测器动态调整）
+        self._zone_weights = {'z1': 1.0, 'z2': 1.0, 'z3': 1.0}
         
         print(f"🧬 五池分层采样器初始化完成")
         print(f"   历史数据: {len(draws)} 期")
