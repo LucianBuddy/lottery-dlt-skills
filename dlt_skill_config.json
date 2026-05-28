@@ -1,9 +1,9 @@
 {
-  "skill_name": "大乐透预测 V1.0",
-  "version": "1.0",
-  "description": "大乐透（DLT）智能预测 - 四大模型融合架构",
+  "skill_name": "大乐透预测 V2.0",
+  "version": "2.0",
+  "description": "大乐透（DLT）智能预测 - 五大模型融合架构（新增隔期重号+智能惩罚）",
   "author": "J.A.R.V.I.S.",
-  "date": "2026-04-06",
+  "date": "2026-05-28",
   "architecture": {
     "core_models": [
       {
@@ -26,6 +26,22 @@
         "zone": "前区+后区",
         "description": "概率校准，使输出更可靠",
         "status": "active"
+      },
+      {
+        "name": "SkipRepeatBooster",
+        "type": "pattern_detection",
+        "zone": "前区+后区",
+        "description": "隔期重号评分增强 + 双期参考候选池 + 后区隔期重号模式",
+        "status": "active",
+        "features": "方案A/B/C：隔期回归检测 + 双期候选生成 + 后区隔期权重"
+      },
+      {
+        "name": "SmartRepeatPenalty",
+        "type": "scoring_adjustment",
+        "zone": "前区+后区",
+        "description": "智能重号惩罚，区分热号堆叠(×0.95)与冷号趋势延续(×1.03)",
+        "status": "active",
+        "features": "方案D：基于号码频率的热度判定"
       }
     ],
     "neural_models": [
@@ -81,12 +97,12 @@
   },
   "model_persistence": {
     "status": "enabled",
-    "note": "V1.0新增: StackingMetaLearner和神经网络模型持久化"
+    "note": "V2.0新增: SkipRepeatBooster + SmartRepeatPenalty + PredictionStore"
   },
   "data_source": {
     "path": "data/DLT历史数据_适配模型版.xlsx",
     "wsl_path": "data/DLT历史数据_适配模型版.xlsx",
-    "total_records": 2853,
+    "total_records": 2876,
     "note": "文件倒序排列（最新在前），自动检测并反转"
   },
   "performance": {
@@ -97,6 +113,7 @@
   },
   "history": [
     {"date": "2026-04-05", "version": "2.0", "note": "StackingMetaLearner实现"},
-    {"date": "2026-05-18", "version": "1.0", "note": "统一版本号，整合并标准化所有描述"}
+    {"date": "2026-05-18", "version": "1.0", "note": "统一版本号，整合并标准化所有描述"},
+    {"date": "2026-05-28", "version": "2.0", "note": "隔期重号增强+双期参考候选+后区隔期重号+智能惩罚+预测存储(4方案)"}
   ]
 }
