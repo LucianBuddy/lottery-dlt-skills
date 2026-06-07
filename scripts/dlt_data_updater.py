@@ -18,7 +18,7 @@ import pandas as pd
 import numpy as np
 
 SKILL_DIR = Path(__file__).resolve().parent
-DATA_PATH = SKILL_DIR / 'data' / 'DLT历史数据_适配模型版.xlsx'
+DATA_PATH = SKILL_DIR.parent / 'assets' / 'data' / 'DLT历史数据_适配模型版.xlsx'
 
 # 体彩数据API (sporttery.cn)
 # gameNo=85 是超级大乐透

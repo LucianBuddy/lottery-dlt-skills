@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 五池×13维融合器 (FivePoolFusion)
-实现 FeatureScorer(13维) × FivePoolSampler(5池) 的真正融合
+实现 FeatureScorer(13维) × MultiPoolSampler(5池) 的真正融合
 
 核心思路：
 1. 复用 FeatureScorer 的13维评分体系，不重复计算
-2. 复用 FivePoolSampler 的5池生成逻辑
+2. 复用 MultiPoolSampler 的多池生成逻辑
 3. 每个池对13维有不同的权重偏好（如热池偏重hot_cold，冷池偏重missing_bayesian）
 4. 用池×维度加权融合评分替代原有单一池评分
 
@@ -44,7 +44,7 @@ import random
 from typing import List, Dict, Tuple, Optional
 
 from dlt_strategy_fusion_v2 import FeatureScorer
-from five_pool_sampler_complete_final import FivePoolSampler
+from five_pool_sampler_complete_final import MultiPoolSampler
 
 # 13维维度名称常量
 ALL_DIMENSIONS: List[str] = [
@@ -144,9 +144,9 @@ class FivePoolFusion:
     """
     五池×13维融合器
 
-    实现 FeatureScorer(13维) × FivePoolSampler(5池) 的真正融合：
+    实现 FeatureScorer(13维) × MultiPoolSampler(5池) 的真正融合：
     1. 复用 FeatureScorer 预计算的13维评分
-    2. 复用 FivePoolSampler 的5池号码列表
+    2. 复用 MultiPoolSampler 的多池号码列表
     3. 建立五池→维度的映射关系（启发式权重）
     4. 每个号码获得 5池×13维 的融合评分
 
@@ -171,8 +171,8 @@ class FivePoolFusion:
         # 初始化13维评分器（FeatureScorer）
         self.scorer = FeatureScorer(draws)
 
-        # 初始化五池采样器（FivePoolSampler）
-        self.pool_sampler = FivePoolSampler(draws)
+        # 初始化多池采样器（MultiPoolSampler）
+        self.pool_sampler = MultiPoolSampler(draws)
 
         # 13维评分缓存（延迟计算，按zone分开）
         self._score_cache: Dict[str, Dict[str, Dict[int, float]]] = {

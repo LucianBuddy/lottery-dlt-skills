@@ -1,0 +1,85 @@
+{
+  "skill_name": "大乐透预测 V3.0.0",
+  "version": "3.0.0",
+  "release_date": "2026-06-02",
+  "reference_sync_version": "3.0.0",
+  "reference_sync_date": "2026-06-07",
+  "author": "J.A.R.V.I.S.",
+  "description": "大乐透（DLT）智能预测 - 六池+趋势池修正+尾号聚合+AC值跟踪+偏差校准",
+  "data_source": {
+    "relative_path": "assets/data/DLT历史数据_适配模型版.xlsx",
+    "column_format": "前区1~前区5 / 后区1~后区2"
+  },
+  "pool_config": {
+    "front_pools": {
+      "hot": {"weight": 0.30, "strategy": "近30期高频"},
+      "cold": {"weight": 0.15, "strategy": "近30期低频"},
+      "balance": {"weight": 0.20, "strategy": "热冷折中"},
+      "trend": {"weight": 0.20, "strategy": "和值趋势方向加权"},
+      "game_theory": {"weight": 0.10, "strategy": "博弈论期望值排序"},
+      "genetic": {"weight": 0.05, "strategy": "遗传算法进化组合"}
+    },
+    "back_pools": {
+      "hot": {"weight": 0.30},
+      "cold": {"weight": 0.15},
+      "balance": {"weight": 0.20},
+      "trend": {"weight": 0.20},
+      "game_theory": {"weight": 0.10},
+      "genetic": {"weight": 0.05}
+    }
+  },
+  "pattern_recognition": {
+    "features": [
+      {"name": "span", "weight": 0.12, "desc": "最大号与最小号的差值"},
+      {"name": "consecutive", "weight": 0.10, "desc": "相邻号码间隔分布"},
+      {"name": "sum", "weight": 0.12, "desc": "5号之和，按5分组距"},
+      {"name": "parity", "weight": 0.10, "desc": "奇偶比分布"},
+      {"name": "repeat", "weight": 0.15, "desc": "与上期重复的号码数"},
+      {"name": "tail", "weight": 0.10, "desc": "个位数字分布多样性"},
+      {"name": "zone", "weight": 0.12, "desc": "1-12/13-24/25-35分布"},
+      {"name": "prime", "weight": 0.07, "desc": "1-35中11个质数的命中数"},
+      {"name": "ac_value", "weight": 0.12, "desc": "算术复杂度"}
+    ],
+    "integration": "模式池(第7池): 从高频模式反推号码集合; 评分增强: base + 模式匹配度×35%"
+  },
+  "neural_models": {
+    "tabnet": {"status": "active", "input_dim": 12, "hidden_dim": 64, "framework": "PyTorch"},
+    "lstm": {"status": "active", "hidden_dim": 64, "num_layers": 2, "seq_len": 20, "framework": "PyTorch"},
+    "transformer": {"status": "active", "d_model": 64, "nhead": 4, "num_layers": 2, "seq_len": 20, "framework": "PyTorch"},
+    "ensemble_weights": {"tabnet": 0.25, "lstm": 0.35, "transformer": 0.40},
+    "integration_weight": 0.25,
+    "features": ["频率", "遗漏值", "趋势", "重号", "隔期", "临号", "奇偶", "质数", "区间位置", "尾号", "热号衰减", "间隔周期性"]
+  },
+  "post_processing": {
+    "skip_repeat_booster": "隔期重号评分增强 ×1.08~×1.20 + 双期重号候选池",
+    "smart_repeat_penalty": "热号堆叠 ×0.95、冷号趋势延续 ×1.03",
+    "tail_aggregation": "尾号≤3种降3%、4种(1重复)加1%",
+    "ac_tracking": "基于近100期AC值概率分布调整候选",
+    "deviation_dashboard": "自动跟踪和值/跨度/大小号偏差",
+    "confidence_recalibration": "根据偏差修正最终评分"
+  },
+  "constraint_engine": {
+    "uniqueness": true,
+    "front_range": [1, 35],
+    "back_range": [1, 12],
+    "standard_format": "5+2",
+    "sum_constraint": true,
+    "ac_constraint": true,
+    "span_constraint": true
+  },
+  "compound_betting": {
+    "plans": [
+      "6+3(18注)", "6+4(36注)", "7+2(21注)", "7+3(63注)",
+      "7+4(126注)", "8+2(56注)", "8+3(168注)", "8+4(336注)",
+      "8+5(560注)", "9+3(378注)", "9+4(756注)", "9+6(1890注)"
+    ],
+    "formula": "C(前区选号数,5) × C(后区选号数,2)"
+  },
+  "strategy_fusion_engine": {
+    "groups": 5,
+    "dimensions_per_group": 5,
+    "fusion_algorithms": ["weighted_voting", "bayesian_fusion", "game_theory_equilibrium", "ml_probability_fusion"]
+  },
+  "training_time_sec": "<120 (含Neural), <30（不含）",
+  "prediction_time_sec": "<2（含Neural推理），<1（不含）"
+}

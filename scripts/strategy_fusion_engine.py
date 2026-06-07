@@ -684,7 +684,7 @@ def load_dlt_data(path: str) -> List[Tuple[List[int], List[int]]]:
 
 
 def predict_fusion(n_groups=5, top_n=5):
-    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'DLT历史数据_适配模型版.xlsx')
+    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets', 'data', 'DLT历史数据_适配模型版.xlsx')
     draws = load_dlt_data(data_path)
     if not draws:
         print("⚠️ 无历史数据，请检查路径")

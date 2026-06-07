@@ -342,7 +342,7 @@ def format_prediction(result: Dict[str, Any]) -> str:
     # =====================
     # 各池策略胆拖方案
     # =====================
-    lines.append("📊 【五池策略 · 胆拖投注方案】")
+    lines.append("📊 【多池策略 · 胆拖投注方案】")
     lines.append("-" * 65)
 
     for pool_name, pool_data in result['pool_dantuo'].items():

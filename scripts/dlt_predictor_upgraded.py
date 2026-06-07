@@ -977,7 +977,7 @@ class DLTPredictorUpgraded:
         
         # 数据文件路径（倒序文件，自动修正）
         _base = os.path.dirname(os.path.abspath(__file__))
-        self.data_path = os.path.join(_base, 'data', 'DLT历史数据_适配模型版.xlsx')
+        self.data_path = os.path.join(_base, '..', 'assets', 'data', 'DLT历史数据_适配模型版.xlsx')
         
         # 尝试从磁盘加载已保存的模型
         self._load_models()
@@ -1813,7 +1813,7 @@ def load_dlt_data(file_path: str) -> List[Tuple[List[int], List[int]]]:
 
 
 class FivePoolSampler:
-    """五池分层采样器 - DLT V1.0核心架构"""
+    """多池分层采样器 - DLT V1.0核心架构"""
 
     def __init__(self, draws: list):
         self.draws = draws  # list of (front_balls, back_balls)
@@ -1946,7 +1946,7 @@ class FivePoolSampler:
 def predict_6_plus_4_v3(n=5):
     """DLT V1.0预测入口：生成n组6+4复式投注"""
     _basedir = os.path.dirname(os.path.abspath(__file__))
-    data_path = os.path.join(_basedir, 'data', 'DLT历史数据_适配模型版.xlsx')
+    data_path = os.path.join(_basedir, '..', 'assets', 'data', 'DLT历史数据_适配模型版.xlsx')
     draws = load_dlt_data(data_path)
     sampler = FivePoolSampler(draws)
     return sampler.generate_6_plus_4(n=n)

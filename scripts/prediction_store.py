@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
 大乐透预测结果存储模块
-自动保存预测结果至知识库，仅保留最近两期。
+自动保存预测结果至知识库，保留最近五期。
 
 设计原则：
 1. 预测完成后自动调用 store_prediction() 保存
-2. 超过2期的数据自动清除
-3. 对比时调用 load_prediction(period) 读取
+2. 超过5期的数据自动清除
+3. 对比时调用 load_prediction(period) 或 compare_with_actual() 读取
 """
+
+# 保留期数
+MAX_PERIODS = 5
 
 import json
 import os
@@ -53,7 +56,7 @@ def store_prediction(
     compound_bets: Optional[Dict[str, List[Dict[str, Any]]]] = None
 ):
     """
-    存储一期预测结果，自动清理超过2期的旧数据。
+    存储一期预测结果，自动清理超过5期的旧数据。
 
     Args:
         period: 期号字符串，如 "26059"
@@ -91,9 +94,9 @@ def store_prediction(
 
     predictions.append(entry)
 
-    # 仅保留最近2期，按期号排序后取最后2条
+    # 仅保留最近5期，按期号排序后取最后5条
     predictions.sort(key=lambda x: x.get("period", "0"))
-    predictions = predictions[-2:]
+    predictions = predictions[-5:]
 
     save_all(predictions)
 
@@ -120,9 +123,86 @@ def load_prediction(period: str) -> Optional[Dict[str, Any]]:
 
 
 def list_saved_periods() -> List[str]:
-    """列出知识库中所有已保存的期号"""
+    """列出知识库中所有已保存的期号（按期号排序，最新在前）"""
     predictions = load_all()
-    return [p.get("period", "?") for p in predictions]
+    periods = [p.get("period", "?") for p in predictions]
+    periods.sort(reverse=True)
+    return periods
+
+
+def compare_with_actual(
+    period: str,
+    actual_front: List[int],
+    actual_back: List[int]
+) -> Optional[Dict[str, Any]]:
+    """
+    对比某期预测与实际开奖号码。
+
+    Args:
+        period: 期号
+        actual_front: 实际前区号码 [n1,n2,n3,n4,n5]
+        actual_back: 实际后区号码 [n1,n2]
+
+    Returns:
+        Dict 含 {'period', 'predicted', 'actual', 'hits', 'best_hit', 'compound_hits'}
+        或 None（未找到对应预测）
+    """
+    pred = load_prediction(period)
+    if not pred:
+        return None
+
+    actual_f_set = set(actual_front)
+    actual_b_set = set(actual_back)
+
+    # 单式命中统计
+    single_hits = []
+    best_combined = 0
+    best_single = None
+    for bet in pred.get('single_bets', []):
+        f_hit = len(set(bet.get('front', [])) & actual_f_set)
+        b_hit = len(set(bet.get('back', [])) & actual_b_set)
+        total = f_hit + b_hit
+        single_hits.append({
+            'front': bet['front'],
+            'back': bet['back'],
+            'front_hit': f_hit,
+            'back_hit': b_hit,
+            'total': total,
+            'score': bet.get('final_score', 0),
+        })
+        if total > best_combined:
+            best_combined = total
+            best_single = {'front': bet['front'], 'back': bet['back'],
+                           'front_hit': f_hit, 'back_hit': b_hit, 'total': total}
+
+    # 复式命中统计
+    compound_hits = {}
+    for ctype, bets in pred.get('compound_bets', {}).items():
+        for bet in bets:
+            f_hit = len(set(bet.get('front', [])) & actual_f_set)
+            b_hit = len(set(bet.get('back', [])) & actual_b_set)
+            if ctype not in compound_hits or f_hit + b_hit > compound_hits[ctype]['total']:
+                compound_hits[ctype] = {
+                    'front_hit': f_hit,
+                    'back_hit': b_hit,
+                    'total': f_hit + b_hit,
+                }
+
+    return {
+        'period': period,
+        'predicted': {
+            'single_count': len(pred.get('single_bets', [])),
+            'has_compound': 'compound_bets' in pred,
+        },
+        'actual': {
+            'front': sorted(actual_front),
+            'back': sorted(actual_back),
+        },
+        'single_hits': single_hits,
+        'best_single': best_single,
+        'best_combined_hits': best_combined,
+        'compound_best_hits': compound_hits,
+    }
 
 
 def show_store():

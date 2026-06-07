@@ -8,7 +8,7 @@ DLT后区多维度融合策略模块
 2. 大小比1:1是核心约束（允许浮动）
 3. 四池融合：热号40% + 冷号25% + 均衡池25% + 博弈论10%
 4. 复用FeatureScorer的13维评分
-5. 复用FivePoolSampler的五池采样
+5. 复用MultiPoolSampler的多池采样
 
 作者: 贾维斯 (JARVIS)
 日期: 2026-04-07
@@ -23,15 +23,15 @@ from collections import defaultdict
 # 路径设置，确保可以导入同目录模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# 复用现有的特征评分器和五池采样器
+# 复用现有的特征评分器和多池采样器
 try:
     from dlt_strategy_fusion_v2 import FeatureScorer
-    from five_pool_sampler_complete_final import FivePoolSampler
+    from five_pool_sampler_complete_final import MultiPoolSampler
 except ImportError as e:
     print(f"⚠️ 导入警告: {e}")
     # 降级定义，避免完全无法使用
     FeatureScorer = None
-    FivePoolSampler = None
+    MultiPoolSampler = None
 
 try:
     from modules.dlt_game_theory import DLTGameTheoryAnalyzer
@@ -64,7 +64,7 @@ class BackZoneFusion:
     """
     后区多维度融合策略
     
-    基于五池×13维融合框架，针对后区12选2的特殊性优化。
+    基于多池×13维融合框架，针对后区12选2的特殊性优化。
     
     策略权重：
     - 热号池：40% （最近10期出现≥3次）
@@ -125,9 +125,9 @@ class BackZoneFusion:
         else:
             self.scorer = None
         
-        # 初始化五池采样器（复用FivePoolSampler）
-        if FivePoolSampler is not None:
-            self.pool_sampler = FivePoolSampler(draws)
+        # 初始化多池采样器（复用MultiPoolSampler）
+        if MultiPoolSampler is not None:
+            self.pool_sampler = MultiPoolSampler(draws)
         else:
             self.pool_sampler = None
         

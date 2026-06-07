@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-五池分层采样器 + 博弈论输出层 + 遗传优化输出层
+多池分层采样器 + 博弈论输出层 + 遗传优化输出层
 基于DLT最终诊断报告实现的全新架构
 """
 
@@ -16,12 +16,12 @@ from modules.dlt_game_theory import DLTGameTheoryAnalyzer
 from modules.dlt_genetic_optimizer import DLTGeneticOptimizer, Chromosome
 
 
-class FivePoolSampler:
-    """五池分层采样器 - 替代原有Stacking预测架构"""
+class MultiPoolSampler:
+    """多池分层采样器 - 替代原有Stacking预测架构"""
     
     def __init__(self, draws: List[Tuple[List[int], List[int]]]):
         """
-        初始化五池分层采样器
+        初始化多池分层采样器
         
         Args:
             draws: 历史开奖数据，格式为[(前区5个号码, 后区2个号码), ...]

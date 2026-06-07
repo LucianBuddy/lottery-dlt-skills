@@ -15,8 +15,6 @@
   9+4 = 从9个前区候选选5个(C(9,5)=126注) × 从4个后区候选选2个(C(4,2)=6注) = 756注, 1512元
 """
 
-from __future__ import annotations
-
 from itertools import combinations
 from math import comb
 from typing import List, Tuple, Dict, Any
