@@ -1,9 +1,9 @@
 {
-  "skill_name": "大乐透预测 V3.0.0",
-  "version": "3.0.0",
-  "release_date": "2026-06-02",
-  "reference_sync_version": "3.0.0",
-  "reference_sync_date": "2026-06-07",
+  "skill_name": "大乐透预测 V3.0.2",
+  "version": "3.0.2",
+  "release_date": "2026-06-09",
+  "reference_sync_version": "3.0.2",
+  "reference_sync_date": "2026-06-09",
   "author": "J.A.R.V.I.S.",
   "description": "大乐透（DLT）智能预测 - 六池+趋势池修正+尾号聚合+AC值跟踪+偏差校准",
   "data_source": {
@@ -51,8 +51,11 @@
     "features": ["频率", "遗漏值", "趋势", "重号", "隔期", "临号", "奇偶", "质数", "区间位置", "尾号", "热号衰减", "间隔周期性"]
   },
   "post_processing": {
-    "skip_repeat_booster": "隔期重号评分增强 ×1.08~×1.20 + 双期重号候选池",
-    "smart_repeat_penalty": "热号堆叠 ×0.95、冷号趋势延续 ×1.03",
+    "parity_enrichment": "奇偶比分布补充：强制覆盖4:1和1:4等易缺失模式（V3.0.2新增）",
+    "compound_independent_sampling": "复式方案独立采样：扩展2倍候选池+三区强制覆盖（V3.0.2新增）",
+    "zone_drift_enhanced": "区间漂移检测增强：阈值0.15→0.10，调整幅度8%→15%（V3.0.2优化）",
+    "skip_repeat_booster": "隔期重号评分增强 ×1.15~×1.28 + 双期重号候选池（V3.0.2升级）",
+    "smart_repeat_penalty": "热号堆叠放松 ×0.97、冷号趋势延续 ×1.04（V3.0.2优化）",
     "tail_aggregation": "尾号≤3种降3%、4种(1重复)加1%",
     "ac_tracking": "基于近100期AC值概率分布调整候选",
     "deviation_dashboard": "自动跟踪和值/跨度/大小号偏差",

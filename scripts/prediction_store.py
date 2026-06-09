@@ -53,7 +53,8 @@ def save_all(predictions: List[Dict[str, Any]]):
 def store_prediction(
     period: str,
     front_bets: List[Dict[str, Any]],
-    compound_bets: Optional[Dict[str, List[Dict[str, Any]]]] = None
+    compound_bets: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    dan_tuo_bets: Optional[Dict[str, Any]] = None
 ):
     """
     存储一期预测结果，自动清理超过5期的旧数据。
@@ -62,6 +63,7 @@ def store_prediction(
         period: 期号字符串，如 "26059"
         front_bets: 单注列表 [{'front': [...], 'back': [...], ...}, ...]
         compound_bets: 复式投注字典 {类型名称: [{'front': [...], 'back': [...]}, ...]}
+        dan_tuo_bets: 胆拖方案字典 (可选) {名称: {'name': ..., 'schemes': [...]}}
     """
     predictions = load_all()
 
@@ -85,12 +87,35 @@ def store_prediction(
         for btype, bets in compound_bets.items():
             compound_clean[btype] = [
                 {
-                    "front": bet.get("front", []),
-                    "back": bet.get("back", []),
+                    # 优先使用front_pool(完整候选池), 兼容旧格式front(单注5+2)
+                    "front_pool": bet.get("front_pool", bet.get("front", [])),
+                    "back_pool": bet.get("back_pool", bet.get("back", [])),
+                    "front_count": bet.get("front_count", 0),
+                    "back_count": bet.get("back_count", 0),
                 }
                 for bet in bets
             ]
         entry["compound_bets"] = compound_clean
+
+    # 【V3.0.2】新增胆拖方案存储
+    if dan_tuo_bets:
+        dan_tuo_clean = {}
+        for label, info in dan_tuo_bets.items():
+            dan_tuo_clean[label] = {
+                "name": info.get("name", label),
+                "schemes": [
+                    {
+                        "name": s.get("name", ""),
+                        "front_dan": s.get("front_dan", []),
+                        "front_tuo_pool": s.get("front_tuo_pool", s.get("front_tuo", [])),
+                        "back": s.get("back", []),
+                        "total_bets": s.get("total_bets", 0),
+                        "hit_probability": s.get("hit_probability", 0),
+                    }
+                    for s in info.get("schemes", [])
+                ]
+            }
+        entry["dan_tuo_bets"] = dan_tuo_clean
 
     predictions.append(entry)
 

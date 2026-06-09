@@ -16,9 +16,18 @@
 """
 
 from itertools import combinations
-from math import comb
 from typing import List, Tuple, Dict, Any
 import random
+
+# math.comb 在 Python 3.8+ 才有, 手工回退
+try:
+    from math import comb
+except ImportError:
+    from math import factorial as _fact
+    def comb(n, k):
+        if k < 0 or k > n:
+            return 0
+        return _fact(n) // (_fact(k) * _fact(n - k))
 
 FRONT_MAX = 35
 BACK_MAX = 12

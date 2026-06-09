@@ -421,6 +421,11 @@ class MultiPoolSampler:
         
         combinations = []
         
+        # 定义三区间范围（仅前区）
+        ZONE1 = set(range(1, 13))
+        ZONE2 = set(range(13, 25))
+        ZONE3 = set(range(25, 36))
+        
         for _ in range(n_combinations):
             combo = []
             seen = set()
@@ -435,20 +440,43 @@ class MultiPoolSampler:
                         combo.extend(picks)
                         seen.update(picks)
             
-            # 热号池贡献30%（从40%下调）
+            # 热号池贡献30%
             add_pool(hot_pool, int(combo_size * 0.30))
-            # 冷号池贡献15%（从20%下调）
+            # 冷号池贡献15%
             add_pool(cold_pool, int(combo_size * 0.15))
-            # 均衡池贡献20%（从25%下调）
+            # 均衡池贡献20%
             add_pool(balance_pool, int(combo_size * 0.20))
-            # 博弈池贡献10%（不变）
+            # 博弈池贡献10%
             add_pool(game_pool, int(combo_size * 0.10))
-            # 遗传池贡献5%（不变）
+            # 遗传池贡献5%
             add_pool(genetic_pool, int(combo_size * 0.05))
-            # 趋势池贡献20%（新增）
+            # 趋势池贡献20%
             add_pool(trend_pool, int(combo_size * 0.20))
             
-            # 补足到combo_size（从趋势池优先补充已去重的号码）
+            # 【优化】前区强制三区覆盖：如果某一区完全无人入选，主动补一个该区号码
+            if zone == 'front' and len(combo) > 0:
+                cur_set = set(combo)
+                zones_present = [
+                    (1 if cur_set & ZONE1 else 0),
+                    (1 if cur_set & ZONE2 else 0),
+                    (1 if cur_set & ZONE3 else 0),
+                ]
+                missing_zones = [i+1 for i, p in enumerate(zones_present) if p == 0]
+                if missing_zones:
+                    # 从缺失区的号码池中找不在seen中的号码
+                    all_zone_pools = {
+                        1: ZONE1 - seen,
+                        2: ZONE2 - seen,
+                        3: ZONE3 - seen,
+                    }
+                    for z in missing_zones:
+                        candidates_z = list(all_zone_pools[z])
+                        if candidates_z:
+                            pick = random.choice(candidates_z)
+                            combo.append(pick)
+                            seen.add(pick)
+            
+            # 补足到combo_size
             if len(combo) < combo_size:
                 needed = combo_size - len(combo)
                 available = [num for num in trend_pool if num not in seen]
@@ -470,7 +498,7 @@ class MultiPoolSampler:
                     combo.extend(picks)
                     seen.update(picks)
             
-            # 最终去重防御（极端情况）并取前combo_size个
+            # 最终去重防御并取前combo_size个
             combo = sorted(set(combo))[:combo_size]
             
             # 如果set去重后不足，补充

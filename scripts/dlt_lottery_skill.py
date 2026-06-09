@@ -57,8 +57,11 @@ def _print_predict(result: Dict[str, Any]) -> None:
             total_notes = comb(front_cnt, 5) * comb(back_cnt, 2)
             print(f"  {ctype} ({total_notes}注, {total_notes*2}元) × {n_bets}组:")
             for i, b in enumerate(bets, 1):
-                front = _fmt_front(b.get('front', []))
-                back = _fmt_back(b.get('back', []))
+                # 优先使用完整候选池(front_pool/back_pool)，兼容旧格式(front/back)
+                front_pool = b.get('front_pool', b.get('front', []))
+                back_pool = b.get('back_pool', b.get('back', []))
+                front = _fmt_front(front_pool)
+                back = _fmt_back(back_pool)
                 print(f"    {i}: [{front}] + [{back}]")
 
     # 胆拖方案
@@ -71,7 +74,8 @@ def _print_predict(result: Dict[str, Any]) -> None:
             print(f"  {label}:")
             for s in schemes:
                 dan = _fmt_front(s.get('front_dan', []))
-                tuo = _fmt_front(s.get('front_tuo', []))
+                # 优先使用完整拖池，兼容旧格式
+                tuo = _fmt_front(s.get('front_tuo_pool', s.get('front_tuo', [])))
                 back = _fmt_back(s.get('back', []))
                 bets = s.get('total_bets', 0)
                 prob = s.get('hit_probability', 0)

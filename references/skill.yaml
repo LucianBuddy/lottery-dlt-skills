@@ -1,6 +1,6 @@
 # DLT大乐透预测技能
 name: dlt-lottery-prediction
-version: 3.0.0
+version: 3.0.1
 description: 中国体育彩票超级大乐透（DLT）预测技能，六池采样+跨期模式识别+策略融合引擎+神经网络(TabNet/LSTM/Transformer)
 author: 贾维斯 (J.A.R.V.I.S.)
 license: MIT
@@ -152,9 +152,9 @@ output:
 # 技能元数据
 metadata:
   created: "2026-03-22"
-  updated: "2026-06-07"
-  reference_sync_version: "3.0.0"
-  reference_sync_date: "2026-06-07"
+  updated: "2026-06-08"
+  reference_sync_version: "3.0.1"
+  reference_sync_date: "2026-06-08"
   constraints:
     - "数据文件需放在 skills/dlt-lottery-prediction/assets/data/ 目录下"
     - "彩票规则严格遵守：前区1-35选5，后区1-12选2"
