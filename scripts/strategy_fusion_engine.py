@@ -671,7 +671,7 @@ class StrategyFusionEngine:
 def load_dlt_data(path: str) -> List[Tuple[List[int], List[int]]]:
     try:
         import pandas as pd
-        df = pd.read_excel(path)
+        df = pd.read_excel(path, engine="openpyxl")
         draws = []
         for j in range(len(df)):
             front = sorted([int(df.iloc[j][f'前区{i}']) for i in range(1, 6)])

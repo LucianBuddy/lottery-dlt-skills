@@ -21,8 +21,8 @@ from collections import Counter, defaultdict
 # ============================================================
 # 版本与参考文件同步
 # ============================================================
-VERSION = "3.0.2"
-RELEASE_DATE = "2026-06-09"
+VERSION = "3.1.0"
+RELEASE_DATE = "2026-06-12"
 
 
 def check_reference_sync():
@@ -120,7 +120,7 @@ class DLTFusionComplete:
 
         # 初始化遗传算法
         try:
-            self.genetic.evolve(generations=50, verbose=False)
+            self.genetic.evolve(generations=5, verbose=False)
         except Exception as e:
             print(f"[DLT-Fusion] 遗传算法初始化: {e}")
 
@@ -140,7 +140,7 @@ class DLTFusionComplete:
 
         # 尝试直接读取Excel
         try:
-            df = pd.read_excel(path)
+            df = pd.read_excel(path, engine='openpyxl')
             draws = []
             # 读取期号列
             self._periods = []
@@ -362,7 +362,7 @@ class DLTFusionComplete:
             self.stats = DLTStatisticsAnalyzer(self.draws)
             self.pattern_recognizer = DLTPatternRecognizer(self.draws)
             self.pattern_recognizer.build_distributions(window=500)
-            self.genetic.evolve(generations=50, verbose=False)
+            self.genetic.evolve(generations=5, verbose=False)
             # 约束引擎重新初始化
             try:
                 self.constraint_engine = DLTConstraintEngine()
@@ -503,11 +503,10 @@ class DLTFusionComplete:
     def _get_compound_front_pool(self, target_size: int = 14) -> List[int]:
         """
         从6池加权采样合成复式前区候选池。
-        【优化V3.0.2】与单注采样路径分离：
-        - 使用不同的expand比率（采更多号码确保覆盖）
-        - 去掉上期排除过滤（保留合理重号）
-        - 强制性确保三区都有代表号码
-        - 从热/冷/均衡/趋势池中采更多以增加多样性
+        【优化V3.0.3-⑥】修复三区覆盖逻辑：
+        - 强制每个区占比不低于 target_size×20%
+        - 用高频号码补充取代随机补充
+        - 确保中区(Z2)不会被过度压缩
         """
         # 扩展池大小取 target_size 的 2 倍，确保有充足候选
         extended = target_size * 2
@@ -522,28 +521,62 @@ class DLTFusionComplete:
         seen = set()
         unique = [x for x in pool if not (x in seen or seen.add(x))]
 
-        # 三区覆盖检查：确保候选池各区间都有号码
         ZONE1 = set(range(1, 13))
         ZONE2 = set(range(13, 25))
         ZONE3 = set(range(25, 36))
         uni_set = set(unique)
-        for zi, zn in [(1, ZONE1), (2, ZONE2), (3, ZONE3)]:
-            if not (uni_set & zn):
-                # 该区无号码，从全范围补充
-                extra = [n for n in zn if n not in uni_set]
-                if extra:
-                    pick = max(extra, key=lambda n: abs(n - 18))
+
+        # 计算各区当前数量
+        z1_count = len(uni_set & ZONE1)
+        z2_count = len(uni_set & ZONE2)
+        z3_count = len(uni_set & ZONE3)
+
+        # 每个区最低配额 = target_size × 20%，但至少1个
+        min_per_zone = max(int(target_size * 0.20), 1)
+
+        # 统计最近20期各区频率，用于智能补充
+        window_20 = min(20, len(self.draws))
+        recent_z1 = Counter()
+        recent_z2 = Counter()
+        recent_z3 = Counter()
+        for i in range(window_20):
+            for n in self.draws[-i-1][0]:
+                if n in ZONE1:
+                    recent_z1[n] += 1
+                elif n in ZONE2:
+                    recent_z2[n] += 1
+                elif n in ZONE3:
+                    recent_z3[n] += 1
+
+        zone_data = [
+            (1, ZONE1, z1_count, recent_z1),
+            (2, ZONE2, z2_count, recent_z2),
+            (3, ZONE3, z3_count, recent_z3),
+        ]
+
+        for zi, zn, z_count, z_freq in zone_data:
+            if z_count < min_per_zone:
+                need = min_per_zone - z_count
+                candidates_in_zone = [n for n in zn if n not in uni_set]
+                # 按最近频率降序排列
+                candidates_in_zone.sort(key=lambda n: -z_freq.get(n, 0))
+                added = 0
+                for pick in candidates_in_zone:
+                    if added >= need:
+                        break
                     unique.append(pick)
                     uni_set.add(pick)
+                    added += 1
 
-        # 保留上期号码（不排除），因为重号是合理模式
-        return list(set(unique))[:target_size]
+        return list(uni_set)[:target_size]
 
     def _get_compound_back_pool(self, target_size: int = 6) -> List[int]:
         """
         合成后区候选池。
-        【优化V3.0.2】独立采样，不依赖单注池结果。
-        扩展采样量确保覆盖后区所有号码。
+        【优化V3.0.3-⑥】分段覆盖：
+        - 独立采样，不依赖单注池结果
+        - 强制1-4/5-8/9-12三段各至少1个号码
+        - 扩展采样量确保覆盖
         """
         extended = max(target_size * 2, 12)
         pool = []
@@ -554,11 +587,22 @@ class DLTFusionComplete:
         pool.extend(self.pool_sampler.generate_trend_pool(extended, 'back'))
         seen = set()
         unique = [x for x in pool if not (x in seen or seen.add(x))]
-        # 确保后区号码充分覆盖（所有1-12都可能在候选池）
         uni_set = set(unique)
-        for n in range(1, 13):
-            if n not in uni_set:
-                unique.append(n)
+
+        # 后区分三段覆盖：1-4, 5-8, 9-12
+        SEG1 = set(range(1, 5))
+        SEG2 = set(range(5, 9))
+        SEG3 = set(range(9, 13))
+
+        for seg, name in [(SEG1, '1-4'), (SEG2, '5-8'), (SEG3, '9-12')]:
+            if not (uni_set & seg):
+                # 该段无号码，补充一个
+                for n in seg:
+                    if n not in uni_set:
+                        unique.append(n)
+                        uni_set.add(n)
+                        break
+
         return unique[:target_size]
 
     def _inject_compound_scores(self, combos):
@@ -929,7 +973,13 @@ class DLTFusionComplete:
         except Exception as e:
             print(f"[DLT-Fusion] ⚠️ 和值补偿跳过: {e}")
 
-        # Step 7a: 常规综合评分 (base*0.4 + gt*0.3 + genetic*0.3)
+        # Step 7a-0: 【优化3.0.3-②】滑动窗口权重校准
+        try:
+            self._recalibrate_score_weights(all_candidates)
+        except Exception:
+            pass
+
+        # Step 7a: 常规综合评分 (动态权重)
         self._compute_final_scores(all_candidates)
 
         # Step 7b: 跨期模式评分增强（方案二：叠加模式匹配度评分）
@@ -1003,13 +1053,31 @@ class DLTFusionComplete:
                         valid.append(c)
                 if valid:
                     kept = len(valid)
+                    before = len(all_candidates)
                     all_candidates = valid
-                    print(f"[DLT-Fusion] 🔗 策略约束过滤: {kept} 候选通过 (原始{len(all_candidates)})")
+                    print(f"[DLT-Fusion] 🔗 策略约束过滤: {kept}/{before} 候选通过")
+                else:
+                    # 软降级：全部被过滤时保留原始候选，仅打标
+                    print(f"[DLT-Fusion] ⚠️ 策略约束: 全部{len(all_candidates)}个候选被过滤，保留原始候选(软降级)")
+                    for c in all_candidates:
+                        c['strategy_warning'] = True
         except Exception as e:
             print(f"[DLT-Fusion] ⚠️ 策略约束验证跳过: {e}")
 
         # Step 7d: 过滤掉与最近一期完全相同的号码（不可能连续两期一模一样）
         all_candidates = self._filter_recent_draws(all_candidates)
+
+        # 【优化3.0.3-④】最小覆盖保证 — 填补候选盲区
+        try:
+            all_candidates = self._ensure_min_coverage(all_candidates)
+        except Exception as e:
+            print(f"[DLT-Fusion] ⚠️ 盲区补充跳过: {e}")
+
+        # 【优化3.0.3-⑤】强制配对重号组合
+        try:
+            all_candidates = self._force_paired_repeat_combo(all_candidates, back_recs)
+        except Exception as e:
+            print(f"[DLT-Fusion] ⚠️ 配对重号跳过: {e}")
 
         # Step 8: 去重+分配后区
         unique = self._deduplicate_and_assign_back(all_candidates, back_recs)
@@ -1588,6 +1656,168 @@ class DLTFusionComplete:
         return all_candidates
 
     # ------------------------------------------------------------------
+    # 【优化3.0.3-④】最小覆盖保证 — 填补候选盲区
+    # ------------------------------------------------------------------
+
+    def _ensure_min_coverage(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        确保候选集覆盖以下关键号码，避免17/21等盲区：
+        1. 边界号：14, 21, 28（三区交界处）
+        2. 最近3期未出现的质数
+        3. 最近10期中遗漏值最高的2个号码
+        对每个缺失的号码，补充分支到至少一个候选。
+        """
+        # ── 候选为空时的重建分支 ──
+        if not candidates:
+            if len(self.draws) >= 5:
+                print(f"[DLT-Fusion] 🔍 候选为空，执行兜底重建...")
+                # 优先用池采样重建
+                rebuilt = self._sample_pool_candidates(n_per_pool=3)
+                if not rebuilt:
+                    # 池采样也失败：加权随机采样
+                    import random
+                    front_nums = list(range(1, 36))
+                    back_nums = [1, 6, 7, 12]
+                    weights = []
+                    window = min(30, len(self.draws))
+                    for n in front_nums:
+                        f = sum(1 for d in self.draws[-window:] if n in d[0])
+                        weights.append(f + 1)
+                    for _ in range(6):
+                        warm = random.choices(front_nums, weights=weights, k=10)
+                        front = sorted(random.sample(warm, 5))
+                        back = sorted(random.sample(back_nums, 2))
+                        rebuilt.append({
+                            'front': front, 'back': back,
+                            'base_score': 0.5, 'gt_score': 0.5, 'genetic_score': 0.5,
+                            'final_score': 0.5, 'source': 'fallback',
+                            'strategy_name': '兜底重建',
+                        })
+                if rebuilt:
+                    return self._ensure_min_coverage(rebuilt)
+            return candidates
+
+        if len(self.draws) < 5:
+            return candidates
+
+        ZONE1 = set(range(1, 13))
+        ZONE2 = set(range(13, 25))
+        ZONE3 = set(range(25, 36))
+
+        boundary_nums = [14, 21, 28]
+        all_primes = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31}
+
+        # 最近3期出现的号码
+        recent_3_nums = set()
+        for i in range(min(3, len(self.draws))):
+            recent_3_nums.update(self.draws[-i-1][0])
+
+        # 最近3期未出现的质数
+        missed_primes = sorted(all_primes - recent_3_nums)
+
+        # 最近10期中遗漏值最高的2个号码
+        window_10 = min(10, len(self.draws))
+        recent_10_nums = set()
+        for i in range(window_10):
+            recent_10_nums.update(self.draws[-i-1][0])
+        missing_counts = {}
+        for n in range(1, 36):
+            if n not in recent_10_nums:
+                missing_counts[n] = len([d for d in self.draws if n in d[0]])
+        sorted_missing = sorted(missing_counts.items(), key=lambda x: x[1])
+        top_missing = [n for n, _ in sorted_missing[:2]]
+
+        # 需要检查的候选号码
+        check_nums = list(set(boundary_nums + missed_primes + top_missing))
+
+        # 统计当前候选集中每个号码的出现次数
+        covered = set()
+        for c in candidates:
+            covered.update(c.get('front', []))
+
+        missing_nums = [n for n in check_nums if n not in covered]
+        if not missing_nums:
+            return candidates
+
+        print(f"[DLT-Fusion] 🔍 最小覆盖检测: 缺失{len(missing_nums)}个盲号码 {missing_nums}")
+
+        new_cands = []
+        for num in missing_nums:
+            # 先查候选集中是否存在包含该号码的候选
+            found = False
+            for c in candidates:
+                if num in c.get('front', []):
+                    found = True
+                    break
+            if found:
+                continue
+
+            # 从历史数据中找一个包含该号码的实际开奖组合
+            found = False
+            for draw_front, draw_back in self.draws[-50:]:
+                if num in draw_front:
+                    combo = list(draw_front)
+                    k = tuple(sorted(combo))
+                    skip = False
+                    for c in candidates + new_cands:
+                        if tuple(c.get('front', [])) == k:
+                            skip = True
+                            break
+                    if skip:
+                        continue
+
+                    # 检查三区覆盖
+                    fs = set(combo)
+                    zc = (1 if fs & ZONE1 else 0) + (1 if fs & ZONE2 else 0) + (1 if fs & ZONE3 else 0)
+                    if zc < 2:
+                        continue
+
+                    w_base = getattr(self, 'score_weights', {}).get('base', 0.4)
+                    w_gt = getattr(self, 'score_weights', {}).get('gt', 0.3)
+                    w_genetic = getattr(self, 'score_weights', {}).get('genetic', 0.3)
+                    base_s = 0.55
+                    gt_s = 0.5
+                    gen_s = 0.5
+                    new_cands.append({
+                        'front': sorted(combo),
+                        'back': sorted(draw_back),
+                        'base_score': base_s,
+                        'gt_score': gt_s,
+                        'genetic_score': gen_s,
+                        'final_score': base_s * w_base + gt_s * w_gt + gen_s * w_genetic,
+                        'source': 'min_coverage',
+                        'strategy_name': '盲区补充',
+                    })
+                    found = True
+                    break
+
+            # 兜底：历史匹配失败时，直接将缺失号码放入一个合法组合
+            if not found:
+                import random as _rnd
+                pool = [n for n in range(1, 36) if n != num]
+                # 按频率加权选其余4个号码
+                _freq = {n: sum(1 for d in self.draws[-30:] if n in d[0]) + 1 for n in pool}
+                _weights = [_freq[n] for n in pool]
+                extra = _rnd.choices(pool, weights=_weights, k=4)
+                combo = sorted([num] + extra)
+                k = tuple(combo)
+                if not any(tuple(c.get('front', [])) == k for c in candidates + new_cands):
+                    new_cands.append({
+                        'front': combo,
+                        'back': sorted(_rnd.sample([1, 6, 7, 12], 2)),
+                        'base_score': 0.5, 'gt_score': 0.5, 'genetic_score': 0.5,
+                        'final_score': 0.5,
+                        'source': 'min_coverage',
+                        'strategy_name': '盲区补充-兜底',
+                    })
+
+        if new_cands:
+            print(f"[DLT-Fusion] 🔍 盲区补充: +{len(new_cands)}个候选 {[c['front'] for c in new_cands]}")
+            return candidates + new_cands
+
+        return candidates
+
+    # ------------------------------------------------------------------
     # 【P4】📊 和值中间带补充 (Mid-Sum Compensation)
     # ------------------------------------------------------------------
 
@@ -1722,22 +1952,37 @@ class DLTFusionComplete:
         ZONE2 = set(range(13, 25))
         ZONE3 = set(range(25, 36))
 
+        # 预计算频率权重（最近30期），供奇偶候选加权采样使用
+        _fw = {n: 0 for n in range(1, 36)}
+        _window = min(30, len(self.draws))
+        for d in self.draws[-_window:]:
+            for n in d[0]:
+                _fw[n] = _fw.get(n, 0) + 1
+        # 加1避免0权重
+        for n in _fw:
+            _fw[n] += 1
+
         for ratio_str, need in to_add:
             odd_target = int(ratio_str.split(':')[0])
             even_target = 5 - odd_target
 
-            # 用历史数据中最接近的号码生成
-            for _ in range(need * 3):  # 多生成一些以备去重
-                # 从不向池中按奇偶筛选
-                all_odds = [n for n in range(1, 36) if n % 2 == 1]
-                all_evens = [n for n in range(1, 36) if n % 2 == 0]
+            all_odds = [n for n in range(1, 36) if n % 2 == 1]
+            all_evens = [n for n in range(1, 36) if n % 2 == 0]
 
-                if odd_target > len(all_odds) or even_target > len(all_evens):
-                    continue
+            if odd_target > len(all_odds) or even_target > len(all_evens):
+                continue
 
-                # 随机选odd_target个奇数和even_target个偶数
-                chosen_odds = random.sample(all_odds, odd_target)
-                chosen_evens = random.sample(all_evens, even_target)
+            # 🎯 频率加权采样（替代纯随机），提高补充候选的质量
+            for _ in range(need * 3):
+                # 用权重采样一个较大的池，去重后再从中选取
+                odd_warm = list(set(random.choices(all_odds, weights=[_fw[n] for n in all_odds], k=odd_target * 4)))
+                even_warm = list(set(random.choices(all_evens, weights=[_fw[n] for n in all_evens], k=even_target * 4)))
+                if len(odd_warm) < odd_target or len(even_warm) < even_target:
+                    # 权重池不足时回退到全量
+                    odd_warm = all_odds
+                    even_warm = all_evens
+                chosen_odds = random.sample(odd_warm, odd_target)
+                chosen_evens = random.sample(even_warm, even_target)
 
                 front_candidate = sorted(chosen_odds + chosen_evens)
 
@@ -1787,10 +2032,104 @@ class DLTFusionComplete:
         return candidates + new_candidates
 
     def _compute_final_scores(self, candidates: List[Dict[str, Any]]) -> None:
-        """计算综合评分（后续会被neural评分叠加修改）"""
+        """计算综合评分（后续会被neural评分叠加修改）
+        权重来自 _recalibrate_score_weights() 的动态校准，
+        若校准失败则使用固定默认值 0.4/0.3/0.3。
+        """
+        w_base = getattr(self, 'score_weights', {}).get('base', 0.4)
+        w_gt = getattr(self, 'score_weights', {}).get('gt', 0.3)
+        w_genetic = getattr(self, 'score_weights', {}).get('genetic', 0.3)
         for c in candidates:
-            # 综合评分: base*0.4 + gt*0.3 + genetic*0.3
-            c['final_score'] = c['base_score'] * 0.4 + c['gt_score'] * 0.3 + c['genetic_score'] * 0.3
+            c['final_score'] = c['base_score'] * w_base + c['gt_score'] * w_gt + c['genetic_score'] * w_genetic
+
+    def _recalibrate_score_weights(self, candidates: List[Dict[str, Any]]) -> None:
+        """
+        【优化 3.0.3-②】滑动窗口权重校准
+        在最近20期回测中搜索最优 base/gt/genetic 权重组合，
+        使 Top5 平均前区命中数最大化。
+        """
+        window = min(20, len(self.draws))
+        if window < 10:
+            self.score_weights = {'base': 0.4, 'gt': 0.3, 'genetic': 0.3}
+            return
+
+        try:
+            test_draws = self.draws[-window:]
+            train_end = len(self.draws) - window
+            if train_end < 50:
+                self.score_weights = {'base': 0.4, 'gt': 0.3, 'genetic': 0.3}
+                return
+
+            from five_pool_sampler_complete_final import MultiPoolSampler
+
+            # 候选权重组合（步长0.05，和为1.0）
+            best_weight = None
+            best_hits = -1.0
+
+            for w_base in [x / 100.0 for x in range(20, 55, 5)]:
+                for w_gt in [x / 100.0 for x in range(20, 55, 5)]:
+                    w_genetic = 1.0 - w_base - w_gt
+                    if w_genetic < 0.2 or w_genetic > 0.5:
+                        continue
+
+                    total_hits = 0.0
+                    count = 0
+
+                    for i, actual in enumerate(test_draws):
+                        hist = self.draws[:train_end + i] if i < window else self.draws
+                        actual_front = set(actual[0])
+
+                        # 用历史数据模拟生成候选
+                        sampler = MultiPoolSampler(hist)
+                        sim_cands = []
+                        try:
+                            front_combos = sampler.stratified_sample(n_combinations=6, zone='front')
+                            for fc in front_combos:
+                                base_s = 0.5 + sum(1 for n in fc if n >= 18) / 50.0
+                                gt_s = 0.5
+                                gen_s = 0.5
+                                sim_cands.append({
+                                    'front': list(fc),
+                                    'base_score': min(1.0, base_s),
+                                    'gt_score': gt_s,
+                                    'genetic_score': gen_s,
+                                })
+                        except Exception:
+                            continue
+
+                        if not sim_cands:
+                            continue
+
+                        # 用当前权重打分并取Top5
+                        for c in sim_cands:
+                            c['score'] = c['base_score'] * w_base + c['gt_score'] * w_gt + c['genetic_score'] * w_genetic
+                        sim_cands.sort(key=lambda x: -x['score'])
+                        top5 = sim_cands[:5]
+
+                        # 计算Top5前区命中数
+                        for c in top5:
+                            total_hits += len(set(c['front']) & actual_front)
+                        count += len(top5)
+
+                    if count > 0:
+                        avg_hits = total_hits / count
+                        if avg_hits > best_hits:
+                            best_hits = avg_hits
+                            best_weight = (w_base, w_gt, w_genetic)
+
+            if best_weight is not None:
+                self.score_weights = {
+                    'base': best_weight[0],
+                    'gt': best_weight[1],
+                    'genetic': best_weight[2],
+                }
+                print(f"[DLT-Fusion] 🎯 权重校准: base={best_weight[0]:.2f} gt={best_weight[1]:.2f} "
+                      f"genetic={best_weight[2]:.2f} (平均命中={best_hits:.4f}/注)")
+            else:
+                self.score_weights = {'base': 0.4, 'gt': 0.3, 'genetic': 0.3}
+        except Exception as e:
+            print(f"[DLT-Fusion] ⚠️ 权重校准跳过: {e}")
+            self.score_weights = {'base': 0.4, 'gt': 0.3, 'genetic': 0.3}
 
     def _deduplicate_and_assign_back(
         self,
@@ -2053,6 +2392,96 @@ class DLTFusionComplete:
 
         return candidates
 
+    # ------------------------------------------------------------------
+    # 【优化3.0.3-⑤】强制配对重号组合 — 将上期高频号码组合输出
+    # ------------------------------------------------------------------
+
+    def _force_paired_repeat_combo(self, candidates: List[Dict[str, Any]],
+                                    back_recs: List[List[int]]) -> List[Dict[str, Any]]:
+        """
+        当上期号码中有 ≥2 个在候选集中高频出现时，
+        将它们强制组合到一注中输出，避免优质重号被分散到不同注。
+        """
+        if len(self.draws) < 2 or not candidates:
+            return candidates
+
+        prev_front = self.draws[-1][0]
+
+        # 统计候选集中每个号码的出现频次
+        num_count = Counter()
+        for c in candidates:
+            for n in c.get('front', []):
+                num_count[n] += 1
+
+        total = max(len(candidates), 1)
+
+        # 找出上期号码在候选中的高频出现者（频次≥30%的候选集占比）
+        high_freq_prev = [n for n in prev_front if num_count.get(n, 0) / total >= 0.3]
+
+        if len(high_freq_prev) < 2:
+            return candidates
+
+        # 取最高频的2-3个，与其他号码配对
+        high_freq_prev = sorted(high_freq_prev, key=lambda n: -num_count.get(n, 0))[:3]
+
+        # 从平衡池/趋势池采3个补充号码
+        from five_pool_sampler_complete_final import MultiPoolSampler
+        try:
+            sampler = MultiPoolSampler(self.draws)
+            extra_pool = sampler.generate_balance_pool(8, 'front')
+            # 去掉重复
+            extra_pool = [n for n in extra_pool if n not in high_freq_prev]
+        except Exception:
+            extra_pool = [n for n in range(1, 36) if n not in high_freq_prev]
+
+        if not extra_pool:
+            extra_pool = [n for n in range(1, 36) if n not in high_freq_prev]
+
+        random.shuffle(extra_pool)
+
+        # 拼凑一个包含这些高频重号的组合
+        for k in range(min(3, len(high_freq_prev)), 1, -1):
+            core = high_freq_prev[:k]
+            need = 5 - len(core)
+            fill = [n for n in extra_pool if n not in core][:need]
+            if len(fill) + len(core) != 5:
+                continue
+            combo = sorted(core + fill)
+
+            # 检查是否已存在
+            key = tuple(combo)
+            exists = False
+            for c in candidates:
+                if tuple(c.get('front', [])) == key:
+                    exists = True
+                    break
+            if exists:
+                continue
+
+            # 后区：取back_recs里的第一个
+            back = back_recs[0] if back_recs else [1, 12]
+
+            w_base = getattr(self, 'score_weights', {}).get('base', 0.4)
+            w_gt = getattr(self, 'score_weights', {}).get('gt', 0.3)
+            w_genetic = getattr(self, 'score_weights', {}).get('genetic', 0.3)
+            base_s = 0.60
+            gt_s = 0.5
+            gen_s = 0.5
+            candidates.append({
+                'front': combo,
+                'back': back,
+                'base_score': base_s,
+                'gt_score': gt_s,
+                'genetic_score': gen_s,
+                'final_score': base_s * w_base + gt_s * w_gt + gen_s * w_genetic,
+                'source': 'paired_repeat',
+                'strategy_name': '配对重号',
+            })
+            print(f"[DLT-Fusion] 🔗 配对重号组合: {combo} (来自上期{high_freq_prev[:k]})")
+            break
+
+        return candidates
+
     def _filter_recent_draws(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         过滤掉与近期开奖号码高度重复的候选组合。
@@ -2108,7 +2537,7 @@ class DLTFusionComplete:
         """获取最近一期期号（直接从Excel读取）"""
         try:
             import pandas as pd
-            df = pd.read_excel(self.data_path)
+            df = pd.read_excel(self.data_path, engine='openpyxl')
             if '期号' in df.columns:
                 # load_dlt_data 检测到倒序时会反转，这里直接取最后一行（最新）
                 first = int(df.iloc[0]['期号'])
@@ -2601,6 +3030,12 @@ class DLTFusionComplete:
         zone1_dev = max(-1.0, min(1.0, zone1_dev))
         zone3_dev = max(-1.0, min(1.0, zone3_dev))
 
+        # 【优化3.0.3-③】连续大和值检测：最近5期和值是否连续偏高
+        window_5 = min(5, len(self.draws))
+        recent_5_sums = [sum(self.draws[-i-1][0]) for i in range(window_5)]
+        consecutive_large = sum(1 for s in recent_5_sums if s > 110)
+        consecutive_large_bias = consecutive_large >= 3
+
         dashboard = {
             'sum_deviation': round(sum_dev, 4),
             'span_deviation': round(span_dev, 4),
@@ -2620,13 +3055,17 @@ class DLTFusionComplete:
             'avg_hist_zone1': round(avg_hist_zone1, 3),
             'avg_candidate_zone3': round(avg_cand_zone3, 3),
             'avg_hist_zone3': round(avg_hist_zone3, 3),
+            # 【优化3.0.3-③】连续大和值偏斜检测
+            'consecutive_large_bias': consecutive_large_bias,
+            'consecutive_large_count': consecutive_large,
         }
 
         print(f"[DLT-Fusion] 📊 偏差仪表盘: "
               f"和值偏差={sum_dev:+.2%} (候选{avg_cand_sum:.0f}/历史{avg_hist_sum:.0f}), "
               f"跨度偏差={span_dev:+.2%}, "
               f"大号比偏差={size_dev:+.2%}, "
-              f"Z1区偏差={zone1_dev:+.2%}, Z3区偏差={zone3_dev:+.2%}")
+              f"Z1区偏差={zone1_dev:+.2%}, Z3区偏差={zone3_dev:+.2%}" +
+              (f", 连续大和值={consecutive_large}/5" if consecutive_large_bias else ""))
 
         return dashboard
 
@@ -2698,6 +3137,13 @@ class DLTFusionComplete:
             elif zone3_dev < -0.30 and big_ratio >= 0.4:
                 # 候选大号偏少，给大号多的加分
                 boost *= 1.02
+                zone_cal_count += 1
+
+            # 【优化3.0.3-③】连续大和值偏斜补偿
+            # 最近5期有≥3期和值>110时，给低和值候选更强加分
+            consecutive_large = dashboard.get('consecutive_large_bias', False)
+            if consecutive_large and front_sum < 95:
+                boost *= 1.03
                 zone_cal_count += 1
 
             if boost > 1.0:

@@ -288,7 +288,7 @@ def get_last_period() -> int:
     if not DATA_PATH.exists():
         return 0
     try:
-        df = pd.read_excel(str(DATA_PATH))
+        df = pd.read_excel(str(DATA_PATH), engine='openpyxl')
         return int(df['期号'].iloc[-1])
     except Exception as e:
         print(f"[DLT-Updater] 读取最后一期失败: {e}")
@@ -300,7 +300,7 @@ def get_first_period() -> int:
     if not DATA_PATH.exists():
         return 0
     try:
-        df = pd.read_excel(str(DATA_PATH))
+        df = pd.read_excel(str(DATA_PATH), engine='openpyxl')
         return int(df['期号'].iloc[0])
     except Exception:
         return 0
@@ -327,7 +327,7 @@ def append_draws(new_draws: List[dict]) -> int:
     new_df = new_df[columns]
 
     if DATA_PATH.exists():
-        existing = pd.read_excel(str(DATA_PATH))
+        existing = pd.read_excel(str(DATA_PATH), engine='openpyxl')
         for col in columns:
             if col not in existing.columns:
                 existing[col] = 0
@@ -405,7 +405,7 @@ def get_total() -> int:
     if not DATA_PATH.exists():
         return 0
     try:
-        df = pd.read_excel(str(DATA_PATH))
+        df = pd.read_excel(str(DATA_PATH), engine='openpyxl')
         return len(df)
     except Exception:
         return 0

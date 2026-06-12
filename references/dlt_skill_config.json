@@ -1,9 +1,9 @@
 {
-  "skill_name": "大乐透预测 V3.0.2",
-  "version": "3.0.2",
-  "release_date": "2026-06-09",
-  "reference_sync_version": "3.0.2",
-  "reference_sync_date": "2026-06-09",
+  "skill_name": "大乐透预测 V3.1.0",
+  "version": "3.1.0",
+  "release_date": "2026-06-12",
+  "reference_sync_version": "3.1.0",
+  "reference_sync_date": "2026-06-12",
   "author": "J.A.R.V.I.S.",
   "description": "大乐透（DLT）智能预测 - 六池+趋势池修正+尾号聚合+AC值跟踪+偏差校准",
   "data_source": {
@@ -58,8 +58,12 @@
     "smart_repeat_penalty": "热号堆叠放松 ×0.97、冷号趋势延续 ×1.04（V3.0.2优化）",
     "tail_aggregation": "尾号≤3种降3%、4种(1重复)加1%",
     "ac_tracking": "基于近100期AC值概率分布调整候选",
-    "deviation_dashboard": "自动跟踪和值/跨度/大小号偏差",
-    "confidence_recalibration": "根据偏差修正最终评分"
+    "deviation_dashboard": "自动跟踪和值/跨度/大小号偏差，新增连续大和值偏斜检测（V3.0.3）",
+    "confidence_recalibration": "根据偏差修正最终评分，连续大和值>110时低和值×1.03补偿（V3.0.3）",
+    "score_weight_sliding_window": "滑动窗口20期回测校准 base/gt/genetic 权重（V3.0.3新增）",
+    "min_coverage": "自动填补17/21等盲区号码：边界号+遗漏质数+高遗漏号码（V3.0.3新增）",
+    "paired_repeat_force": "强制上期高频重号配对输出为同一注（V3.0.3新增）",
+    "compound_zone_quota": "复式前区池20%/区最低配额+后区段覆盖1-4/5-8/9-12（V3.0.3修复）"
   },
   "constraint_engine": {
     "uniqueness": true,

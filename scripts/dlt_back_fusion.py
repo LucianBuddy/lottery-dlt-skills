@@ -7,7 +7,7 @@ DLT后区多维度融合策略模块
 1. 后区只有12个号码，冷热评分窗口更短（热:10期, 冷:20期）
 2. 大小比1:1是核心约束（允许浮动）
 3. 四池融合：热号40% + 冷号25% + 均衡池25% + 博弈论10%
-4. 复用FeatureScorer的13维评分
+4. 复用DLTFeatureExtractor的13维评分（策略融合引擎）
 5. 复用MultiPoolSampler的多池采样
 
 作者: 贾维斯 (JARVIS)
@@ -23,15 +23,11 @@ from collections import defaultdict
 # 路径设置，确保可以导入同目录模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# 复用现有的特征评分器和多池采样器
-try:
-    from dlt_strategy_fusion_v2 import FeatureScorer
-    from five_pool_sampler_complete_final import MultiPoolSampler
-except ImportError as e:
-    print(f"⚠️ 导入警告: {e}")
-    # 降级定义，避免完全无法使用
-    FeatureScorer = None
-    MultiPoolSampler = None
+# 复用现有的多池采样器
+from five_pool_sampler_complete_final import MultiPoolSampler
+
+# 复用策略融合引擎中的13维特征提取器（替代已废弃的 dlt_strategy_fusion_v2.FeatureScorer）
+from strategy_fusion_engine import DLTFeatureExtractor
 
 try:
     from modules.dlt_game_theory import DLTGameTheoryAnalyzer
@@ -119,11 +115,8 @@ class BackZoneFusion:
         self.back_draws = [d[1] for d in draws]
         self.n = len(draws)
         
-        # 初始化特征评分器（复用FeatureScorer）
-        if FeatureScorer is not None:
-            self.scorer = FeatureScorer(draws)
-        else:
-            self.scorer = None
+        # 初始化特征提取器（复用DLTFeatureExtractor的13维特征提取能力）
+        self.feature_extractor = DLTFeatureExtractor(draws, window=30)
         
         # 初始化多池采样器（复用MultiPoolSampler）
         if MultiPoolSampler is not None:
@@ -250,52 +243,76 @@ class BackZoneFusion:
         else:
             self.game_scores = {n: 0.5 for n in all_nums}
 
+    def _get_combo_level_scores(self, combo: List[int]) -> Dict[str, float]:
+        """
+        计算后区组合级特征评分（ac/range/consecutive）
+        这些特征无法在单号码级评估，必须在组合级计算。
+        """
+        n1, n2 = combo[0], combo[1]
+
+        # AC值：后区只用2个号码，AC值固定为两数之差
+        ac_val = abs(n1 - n2)
+        # 后区AC值归一化：最大差11（12-1），最小差1
+        ac_score = (ac_val - 1) / 10.0 if ac_val > 0 else 0.0
+
+        # 跨度（range）：后区两码之差
+        range_val = abs(n1 - n2)
+        # 归一化：最大11，最小1
+        range_score = (range_val - 1) / 10.0 if range_val > 0 else 0.0
+
+        # 连号：后区连号的概率
+        consecutive_score = 1.0 if abs(n1 - n2) == 1 else 0.0
+
+        return {
+            'ac': round(ac_score, 4),
+            'range': round(range_score, 4),
+            'consecutive': round(consecutive_score, 4),
+        }
+
     def get_back_scores(self, zone: str = 'back') -> Dict[str, Dict[int, float]]:
         """
-        获取后区13维评分
+        获取后区13维评分（号码级）
         
-        从FeatureScorer获取后区各维度评分，
         维度包括：hot_cold, odd_even, consecutive, repeat,
         adjacent, sum, prime, missing_bayesian, size,
         zone, ac, range, cooccurrence
+        
+        注意：consecutive/ac/range 是组合级特征，
+        在号码级返回空（由 _get_combo_level_scores 在组合级计算）。
         
         Args:
             zone: 区域类型，默认'back'
             
         Returns:
             Dict[str, Dict[int, float]]: {维度名: {号码: 分数}}
+                组合级维度返回空 dict {}
         """
-        if self.scorer is None:
-            return {}
-        
-        scoring_methods = [
-            'score_hot_cold',
-            'score_odd_even',
-            'score_consecutive',
-            'score_repeat',
-            'score_adjacent',
-            'score_sum',
-            'score_prime',
-            'score_missing_bayesian',
-            'score_size',
-            'score_zone',
-            'score_ac',
-            'score_range',
-            'score_cooccurrence',
-        ]
-        
-        dim_names = [
-            'hot_cold', 'odd_even', 'consecutive', 'repeat',
-            'adjacent', 'sum', 'prime', 'missing_bayesian',
-            'size', 'zone', 'ac', 'range', 'cooccurrence',
-        ]
-        
+        all_nums = list(range(BACK_MIN, BACK_MAX + 1))
+        fe = self.feature_extractor
         result: Dict[str, Dict[int, float]] = {}
-        for method_name, dim_name in zip(scoring_methods, dim_names):
-            method = getattr(self.scorer, method_name, None)
-            if method is not None:
-                result[dim_name] = method(zone=zone)
-        
+
+        # ── DLTFeatureExtractor 提供的方法 ──
+        result['hot_cold'] = {n: fe.get_hot_score(n, 'back') for n in all_nums}
+        result['repeat'] = {n: fe.get_repeat_score(n, 'back') for n in all_nums}
+        result['adjacent'] = {n: fe.get_adjacent_score(n, 'back') for n in all_nums}
+        result['prime'] = {n: fe.get_prime_score(n, 'back') for n in all_nums}
+        result['missing_bayesian'] = {n: fe.get_missing_score(n, 'back') for n in all_nums}
+        result['cooccurrence'] = {n: fe.get_cooc_score(n, 'back') for n in all_nums}
+
+        # ── 内联计算 ──
+        # 奇偶：偶数=1，奇数=0
+        result['odd_even'] = {n: 1.0 if n % 2 == 0 else 0.0 for n in all_nums}
+        # 和值归一化：1→0.0, 12→1.0
+        result['sum'] = {n: (n - 1) / 11.0 for n in all_nums}
+        # 大小：小号(1-6)=0, 大号(7-12)=1
+        result['size'] = {n: 1.0 if n >= 7 else 0.0 for n in all_nums}
+        result['zone'] = result['size']  # 后区区间=大小
+
+        # ── 组合级特征：号码级占位空dict ──
+        result['ac'] = {}
+        result['range'] = {}
+        result['consecutive'] = {}
+
         return result
 
     def apply_size_constraint(self, candidates: List[List[int]]) -> List[List[int]]:
@@ -403,12 +420,11 @@ class BackZoneFusion:
         对后区组合进行多维度评分
         
         评估维度：
-        - hot_score: 热号评分（来自热号池权重）
-        - cold_score: 冷号评分（来自冷号池权重）
-        - balance_score: 均衡评分
-        - game_score: 博弈论评分
-        - size_score: 大小比评分（1:1得满分）
-        - fusion_score: 综合融合评分
+        - 基础池：hot/cold/balance/game_score
+        - 统计特征：size_score（大小比1:1得满分）
+        - 组合级特征：ac_score（算术复杂度）、range_score（跨度）、
+          consecutive_score（连号）
+        - fusion_score: 综合融合评分（基础池加权）
         
         Args:
             combo: 后区号码对 [n1, n2]
@@ -435,6 +451,9 @@ class BackZoneFusion:
         else:
             size_score = 0.3
         
+        # 组合级特征评分（AC值/跨度/连号）
+        combo_scores = self._get_combo_level_scores(combo)
+        
         # 综合融合评分
         sw = self.BACK_STRATEGY
         fusion = (
@@ -444,7 +463,7 @@ class BackZoneFusion:
             sw['game_weight'] * game
         )
         
-        return {
+        result = {
             'hot_score': round(hot, 4),
             'cold_score': round(cold, 4),
             'balance_score': round(balance, 4),
@@ -452,6 +471,8 @@ class BackZoneFusion:
             'size_score': round(size_score, 4),
             'fusion_score': round(fusion, 4),
         }
+        result.update(combo_scores)
+        return result
 
     def select_back_pair(
         self,
@@ -512,8 +533,8 @@ class BackZoneFusion:
         """
         后区13维加权融合
         
-        从FeatureScorer获取后区13维评分，按权重加权融合
-        得到每个号码的综合评分
+        从DLTFeatureExtractor获取后区号码级10维评分，按权重加权融合
+        得到每个号码的综合评分（组合级ac/range/consecutive不在此计算）
         
         Args:
             dimension_weights: 各维度权重，
@@ -527,7 +548,10 @@ class BackZoneFusion:
         # 获取13维评分
         dim_scores = self.get_back_scores(zone='back')
 
-        if not dim_scores:
+        # 过滤出有数据的号码级维度（排除组合级的 ac/range/consecutive）
+        valid_dim_scores = {k: v for k, v in dim_scores.items() if v}
+
+        if not valid_dim_scores:
             # 降级：使用四池融合评分
             all_nums = list(range(BACK_MIN, BACK_MAX + 1))
             sw = self.BACK_STRATEGY
@@ -545,11 +569,11 @@ class BackZoneFusion:
         all_nums = list(range(BACK_MIN, BACK_MAX + 1))
         fused: Dict[int, float] = {n: 0.0 for n in all_nums}
 
-        total_weight = sum(weights.get(dim, 0) for dim in dim_scores)
+        total_weight = sum(weights.get(dim, 0) for dim in valid_dim_scores)
         if total_weight == 0:
             return {n: 0.5 for n in all_nums}
 
-        for dim_name, scores in dim_scores.items():
+        for dim_name, scores in valid_dim_scores.items():
             w = weights.get(dim_name, 0)
             if w == 0:
                 continue
@@ -572,7 +596,7 @@ class BackZoneFusion:
         - 大小比评分：size_score
         - 综合融合评分：fusion_score
         - 各池入选情况：in_hot, in_cold, in_balance
-        - 13维FeatureScorer评分（可选）
+        - 13维融合评分（号码级10维 + 组合级3维）
         
         Args:
             n: 推荐数量，默认5

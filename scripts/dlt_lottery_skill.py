@@ -9,7 +9,7 @@ import sys
 import json
 from typing import Dict, List, Any, Optional
 
-from dlt_fusion_complete import DLTFusionComplete, data_dir
+from dlt_fusion_complete import DLTFusionComplete, data_dir, VERSION
 
 
 # ── 格式化工具 ─────────────────────────────────────────
@@ -308,7 +308,7 @@ def main():
         elif args.command == 'info':
             print(f"\n{'='*60}")
             print(f"  DLT 大乐透多策略融合预测系统")
-            print(f"  V3.0.0 — 六池采样+跨期模式识别+NeuralEnsemble")
+            print(f"  {VERSION} — 六池采样+跨期模式识别+NeuralEnsemble")
             print(f"{'='*60}")
             print(f"\n核心策略:")
             print(f"  🔥 热号池(30%)  ❄️ 冷号池(15%)  ⚖️ 均衡池(20%)")

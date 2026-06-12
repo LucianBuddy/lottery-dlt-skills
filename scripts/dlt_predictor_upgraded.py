@@ -1748,7 +1748,7 @@ def load_dlt_data(file_path: str) -> List[Tuple[List[int], List[int]]]:
         draws[-1] = 最新的一期(26035)
     """
     try:
-        df = pd.read_excel(file_path)
+        df = pd.read_excel(file_path, engine="openpyxl")
 
         records = []
         for _, row in df.iterrows():
