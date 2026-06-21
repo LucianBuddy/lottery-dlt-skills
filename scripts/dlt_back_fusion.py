@@ -9,6 +9,7 @@ DLT后区多维度融合策略模块
 3. 四池融合：热号40% + 冷号25% + 均衡池25% + 博弈论10%
 4. 复用DLTFeatureExtractor的13维评分（策略融合引擎）
 5. 复用MultiPoolSampler的多池采样
+6. 【冷三联因子】后区过热反转检测：连续2期热号组合后强制偏移冷号30%
 
 作者: 贾维斯 (JARVIS)
 日期: 2026-04-07
@@ -67,6 +68,7 @@ class BackZoneFusion:
     - 冷号池：25% （最近20期出现≤1次，回补机会）
     - 均衡池：25% （热冷各半）
     - 博弈论池：10%（大众偏好回避度）
+    - 【冷三联因子】后区过热反转：连续2期热号组合时强制偏移冷号30%
     
     大小比约束：
     - 核心：1大1小（1:1）
@@ -582,6 +584,10 @@ class BackZoneFusion:
 
         return fused
 
+    # ==================================================================
+    # 后区推荐生成（主入口）
+    # ==================================================================
+
     def generate_recommendations(
         self,
         n: int = 5
@@ -590,6 +596,7 @@ class BackZoneFusion:
         生成n个后区推荐对+各维度评分详情
 
         【方案C】集成隔期重号评分：上上期后区号码加权重。
+        【冷三联因子】后区过热反转：连续2期热号组合时强制偏移冷号。
         
         返回每个推荐号码对的详细评分，包括：
         - 基础池评分：hot_score, cold_score, balance_score, game_score
@@ -610,6 +617,9 @@ class BackZoneFusion:
 
         # 【方案C】获取隔期重号评分
         skip_repeat_scores = self._compute_skip_repeat_back_scores()
+
+        # 【冷三联因子】检测后区过热反转信号
+        cold_force_scores = self._detect_back_hot_cascade()
 
         # 生成候选并筛选
         candidates = self.generate_back_candidates(n=100)
@@ -661,6 +671,19 @@ class BackZoneFusion:
                 final_score = final_score * 0.9 + skip_boost * 0.1
                 scores['skip_repeat_score'] = round(skip_boost, 4)
 
+            # 【冷三联因子】后区过热反转补偿
+            cold_force = 0.0
+            for n in combo:
+                cold_force += cold_force_scores.get(n, 0.0)
+            cold_force = cold_force / 2.0  # 归一化到0~1
+            if cold_force > 0:
+                # 冷三联因子权重30%（过热时强制偏移）
+                final_score = final_score * 0.70 + cold_force * 0.30
+                scores['cold_force_score'] = round(cold_force, 4)
+                if cold_force >= 0.6:
+                    print(f"[Back-Fusion] ❄️ 冷三联因子激活: {combo} "
+                          f"force={cold_force:.2f}")
+
             scores['final_score'] = round(final_score, 4)
 
             scored.append((combo, scores, final_score))
@@ -680,7 +703,61 @@ class BackZoneFusion:
             if len(result) >= n:
                 break
 
-        return result
+        # 【V3.1.4-④】后区全偶/全奇路径注入
+        # 当常规候选缺乏非均衡奇偶组合时，主动注入
+        all_even = [c for c in scored if c[0][0] % 2 == 0 and c[0][1] % 2 == 0]
+        all_odd = [c for c in scored if c[0][0] % 2 == 1 and c[0][1] % 2 == 1]
+        if not any(c[0][0] % 2 == 0 and c[0][1] % 2 == 0 for c in result):
+            # 无全偶组合，从候选中选取最佳全偶注入
+            for combo, scores, _ in all_even:
+                if tuple(combo) not in seen:
+                    seen.add(tuple(combo))
+                    result.append((combo, scores))
+                    if len(result) >= n:
+                        break
+                    break  # 只注入1个
+        if not any(c[0][0] % 2 == 1 and c[0][1] % 2 == 1 for c in result):
+            # 无全奇组合，注入1个
+            for combo, scores, _ in all_odd:
+                if tuple(combo) not in seen:
+                    seen.add(tuple(combo))
+                    result.append((combo, scores))
+                    if len(result) >= n:
+                        break
+                    break  # 只注入1个
+        # 若仍缺乏全偶/全奇，从候选池生成并注入
+        if not any(c[0][0] % 2 == 0 and c[0][1] % 2 == 0 for c in result):
+            # 强制构建一个全偶组合
+            evens = [n for n in range(2, 13, 2)]  # 2,4,6,8,10,12
+            # 选择最近出现最少的一对全偶号码
+            even_freq = {n: self.back_freq.get(n, 0) for n in evens}
+            even_sorted = sorted(evens, key=lambda n: even_freq[n])
+            for i, n1 in enumerate(even_sorted):
+                for n2 in even_sorted[i+1:]:
+                    combo = sorted([n1, n2])
+                    if tuple(combo) not in seen:
+                        seen.add(tuple(combo))
+                        result.append((combo, {'fusion_score': 0.5, 'final_score': 0.5,
+                                               'source': '全偶注入'}))
+                        break
+                if len(result) > len([c for c in result if c[0][0] % 2 == 0 and c[0][1] % 2 == 0]):
+                    break
+        if not any(c[0][0] % 2 == 1 and c[0][1] % 2 == 1 for c in result):
+            odds = [n for n in range(1, 13, 2)]  # 1,3,5,7,9,11
+            odd_freq = {n: self.back_freq.get(n, 0) for n in odds}
+            odd_sorted = sorted(odds, key=lambda n: odd_freq[n])
+            for i, n1 in enumerate(odd_sorted):
+                for n2 in odd_sorted[i+1:]:
+                    combo = sorted([n1, n2])
+                    if tuple(combo) not in seen:
+                        seen.add(tuple(combo))
+                        result.append((combo, {'fusion_score': 0.5, 'final_score': 0.5,
+                                               'source': '全奇注入'}))
+                        break
+                if len(result) > len([c for c in result if c[0][0] % 2 == 1 and c[0][1] % 2 == 1]):
+                    break
+
+        return result[:n]
 
     # ------------------------------------------------------------------
     # 【方案C】后区隔期重号模式检测
@@ -731,6 +808,92 @@ class BackZoneFusion:
                         scores[adj] = max(scores[adj], 0.4)
 
         return scores
+
+    # ==================================================================
+    # 【冷三联因子】后区过热反转检测
+    # ==================================================================
+
+    def _detect_back_hot_cascade(self) -> Dict[int, float]:
+        """
+        冷三联因子：后区过热反转检测。
+
+        核心逻辑：
+        - 检查最近2期的后区号码是否均为"热号组合"
+        - 热号组合定义：两个号码都是当前热号池中的号码
+        - 当连续2期后区均为热号组合时，称为"后区过热"
+        - 过热状态下，下一期冷号回补概率大幅增加
+        - 对当前冷号池中号码给予额外权重（30%强制偏移）
+
+        Returns:
+            Dict[int, float]: {后区号码: 冷三联因子评分(0~1)}
+                冷号池中的号码获得0.6~0.9评分，热号池中的号码获得0.1~0.3
+        """
+        cold_force: Dict[int, float] = {n: 0.0 for n in range(1, 13)}
+
+        if len(self.draws) < 4:
+            return cold_force
+
+        # 检查最近2期后区是否均命中热号池
+        def is_hot_combo(combo: List[int]) -> bool:
+            """判断一个后区组合是否两个号码都来自热号池"""
+            hot_count = sum(1 for n in combo if n in self.hot_pool)
+            return hot_count >= 2
+
+        prev_back = self.draws[-1][1]     # 上期后区
+        skip_back = self.draws[-2][1]     # 上上期后区
+
+        prev_hot = is_hot_combo(prev_back)
+        skip_hot = is_hot_combo(skip_back)
+
+        # 计算过热程度
+        # 级别1：仅上期热（轻度过热）
+        # 级别2：连续2期热（中度过热→启动冷三联）
+        # 级别3：连续3期+热（重度过热→强力偏移）
+        consecutive_hot = 0
+        if prev_hot:
+            consecutive_hot = 1
+            if skip_hot:
+                consecutive_hot = 2
+                # 检查更早一期是否也热
+                if len(self.draws) >= 4:
+                    third_back = self.draws[-3][1]
+                    if is_hot_combo(third_back):
+                        consecutive_hot = 3
+
+        if consecutive_hot < 2:
+            # 未达到过热阈值，不启动冷三联
+            return cold_force
+
+        # 启动冷三联因子
+        # 评分数值：冷号池中的号码得分，热号池中的号码降分
+        cascade_strength = 0.30 if consecutive_hot == 2 else 0.45
+
+        # 对每个后区号码计算冷三联评分
+        for n in range(1, 13):
+            in_cold = n in self.cold_pool
+            in_hot = n in self.hot_pool
+
+            if in_cold:
+                # 冷号获得大力加分（冷三联核心：冷号回补）
+                if consecutive_hot >= 3:
+                    cold_force[n] = 0.90
+                else:
+                    cold_force[n] = 0.75
+            elif not in_hot:
+                # 中性号（既不在热池也不在冷池）：获得中等加分
+                if consecutive_hot >= 3:
+                    cold_force[n] = 0.60
+                else:
+                    cold_force[n] = 0.45
+            else:
+                # 热号降分（过热状态下热号不再继续热）
+                cold_force[n] = 0.15
+
+        print(f"[Back-Fusion] ❄️ 冷三联因子: 后区过热{consecutive_hot}期, "
+              f"强度={cascade_strength:.2f}, "
+              f"冷号奖励={[n for n in range(1,13) if cold_force[n]>=0.7]}")
+
+        return cold_force
 
     def get_pool_summary(self) -> Dict[str, Any]:
         """

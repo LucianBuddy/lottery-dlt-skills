@@ -300,8 +300,65 @@ class DLTPatternRecognizer:
         for f in front_history:
             ac_counter[self.extract_ac_value(f)] += 1
         
+        # 【V3.1.3 - 连号缺失】跨期连号模式检测：统计隔期重号+连号混合模式
+        # 核心逻辑：检测 "上期最后一个号码" 与 "当期第一个号码" 是否形成连号对，如
+        # 26066前区19 → 26067前区18-19（19是上期重号，18是当期连号）
+        # 这种模式本质是：上期重号 -> 上期重号的邻号
+        cross_period_consecutive_counter = Counter()
+        for i in range(1, len(front_history)):
+            prev_set = set(front_history[i-1])
+            curr = front_history[i]
+            # 对每个当期号码，检查它是否是上期某个号码的邻号且该邻号也出现在当期
+            for n in curr:
+                for prev_n in front_history[i-1]:
+                    if abs(n - prev_n) == 1:
+                        # n是prev_n的邻号，且prev_n也出现在当期（形成隔期重号+连号）
+                        if prev_n in curr:
+                            cross_period_consecutive_counter['adjacent_repeat'] += 1
+                        else:
+                            cross_period_consecutive_counter['adjacent_no_repeat'] += 1
+        
+        # 也为三连以上连号簇检测添加跨期特征
+        # 26066: 14,21 → 26067: 13,19,28 中18-19属于跨期双连号（19重号+18邻号）
+        # 统计模式：上期重号+当期连号密度
+        cross_consecutive_density_counter = Counter()
+        for i in range(1, len(front_history)):
+            prev = set(front_history[i-1])
+            curr = sorted(front_history[i])
+            
+            # 计算当期连号对中涉及重号的连号对数
+            repeat_nums = [n for n in curr if n in prev]
+            if not repeat_nums:
+                cross_consecutive_density_counter[0] += 1
+                continue
+            
+            # 检查每个重号的邻号是否也在当期出现
+            linked_pairs = 0
+            for rn in repeat_nums:
+                if rn + 1 in curr or rn - 1 in curr:
+                    linked_pairs += 1
+            
+            cross_consecutive_density_counter[linked_pairs] += 1
+        
+        total_cross = len(front_history) - 1 if len(front_history) > 1 else 1
+        
+        self._cross_period_dist = {
+            'adjacent_repeat': cross_period_consecutive_counter.get('adjacent_repeat', 0) / max(total_cross, 1),
+            'adjacent_no_repeat': cross_period_consecutive_counter.get('adjacent_no_repeat', 0) / max(total_cross, 1),
+            'total': total_cross,
+        }
+        self._cross_density_dist = {
+            'counter': cross_consecutive_density_counter,
+            'total': total_cross,
+        }
+        
         total = len(front_history)
         
+        # 【V3.1.3 - 连号缺失】添加跨期连号模式到分布
+        # cross_period_adjacent 和 cross_density 不直接作为列表项，
+        # 而是通过 score_combo 中的额外逻辑调用 _cross_period_dist 和 _cross_density_dist
+        # 权重附加在 consecutive 项中（consecutive weight 0.20 已包含连号权重）
+
         self._pattern_distributions = {
             'span': {
                 'counter': span_counter,
@@ -501,7 +558,58 @@ class DLTPatternRecognizer:
         detail['ac_value'] = ac_prob * dist['weight']
         weighted_sum += ac_prob * dist['weight']
         total_weight += dist['weight']
-        
+
+        # 【V3.1.3 - 连号缺失】跨期连号混合模式评分
+        # 检测候选中的号码是否与上期号码形成"隔期重号+连号"混合模式
+        # 例如：上期有19，当期有18,19 → 19是重号，18与19形成连号对
+        # 这个模式比纯连号或纯重号的历史命中率更高
+        if prev_front is not None and hasattr(self, '_cross_period_dist'):
+            curr_sorted = sorted(front)
+            prev_set = set(prev_front)
+            curr_set = set(front)
+
+            # 1. 检测重号+邻号对的出现数量
+            linked_pairs = 0
+            for rn in curr_sorted:
+                if rn in prev_set:
+                    # 该号码是重号，检查其邻号是否也在当期
+                    if rn + 1 in curr_set:
+                        linked_pairs += 1
+                    if rn - 1 in curr_set:
+                        linked_pairs += 1
+
+            # 2. 检测纯粹的跨期连号模式（上期两个相邻号码中一个在当期出现）
+            if len(prev_front) >= 2:
+                prev_sorted = sorted(prev_front)
+                cross_linked = 0
+                for i in range(len(prev_sorted) - 1):
+                    if prev_sorted[i+1] - prev_sorted[i] == 1:
+                        # 上期有一对连号
+                        p1, p2 = prev_sorted[i], prev_sorted[i+1]
+                        if p1 in curr_set or p2 in curr_set:
+                            # 当期出现了这组连号中的至少一个
+                            # 如果另一个也在当期出现→形成完整的跨期延续连号
+                            if p1 in curr_set and p2 in curr_set:
+                                cross_linked += 2  # 完整延续：双分数
+                            else:
+                                cross_linked += 1  # 部分延续：单分数
+
+            # 如果跨期密度分布已构建，从历史分布中获取概率参考
+            cross_density_match = 0.5
+            if hasattr(self, '_cross_density_dist'):
+                cd = self._cross_density_dist
+                # 密度等级
+                density = min(linked_pairs + cross_linked, 4)
+                prob = cd['counter'].get(density, 0) / max(cd['total'], 1)
+                cross_density_match = prob * 3.0  # 放大系数3x补偿低频
+
+            # 综合跨期连号评分（权重0.05，从consecutive补充）
+            cross_adj_score = min(linked_pairs * 0.10 + cross_linked * 0.08 +
+                                  cross_density_match * 0.05, 0.30)
+            detail['cross_period_consecutive'] = cross_adj_score
+            weighted_sum += cross_adj_score
+            total_weight += 0.08  # 独立权重8%
+
         total_score = weighted_sum / max(total_weight, 0.01)
         
         return {

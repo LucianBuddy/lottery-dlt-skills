@@ -21,16 +21,15 @@ from collections import Counter, defaultdict
 from dlt_data_updater import check_and_update
 
 # ============================================================
-# 版本与参考文件同步
+# 单源版本导入（仅 version.py 定义版本号）
 # ============================================================
-VERSION = "3.1.2"
-RELEASE_DATE = "2026-06-16"
+from version import VERSION, RELEASE_DATE
 
 
 def check_reference_sync():
     """
     检查 references/ 下的配置文件版本是否与当前代码版本一致。
-    每次版本升级后应手动更新 references/ 文件中的版本号。
+    所有版本字符串在 version.py 中统一维护，此处仅做运行时校验。
     返回 (synced: bool, message: str)
     """
     ref_path = _path.join(_path.dirname(_path.abspath(__file__)), '..', 'references', 'dlt_skill_config.json')
@@ -41,7 +40,7 @@ def check_reference_sync():
             config = json.load(f)
         ref_ver = config.get('reference_sync_version', '')
         if ref_ver != VERSION:
-            return False, f"⚠️ 版本不匹配: 代码 VERSION={VERSION}, 配置 reference_sync_version={ref_ver}. 请更新 references/ 文件"
+            return False, f"⚠️ 版本不匹配: 代码 VERSION={VERSION}, 配置 reference_sync_version={ref_ver}. 请运行 python3 bump_version.py {VERSION}"
         return True, f"✅ references 同步正常 (V{ref_ver})"
     except Exception as e:
         return False, f"⚠️ 无法读取参考配置文件: {e}"
@@ -1093,6 +1092,8 @@ class DLTFusionComplete:
             print(f"[DLT-Fusion] ⚠️ 模式池衰减跳过: {e}")
 
         # Step 7b2: 和值动量衰减补偿 — 当和值连续3期下降时强力补偿小号区
+        # 【V3.1.4-①】指数衰减：连续下降期数越多，补偿力度越大
+        #   26068期实际和值69，预测全部92-104，模型判断了方向但低估了降幅
         if len(self.draws) >= 5:
             recent_sums = [sum(self.draws[-i-1][0]) for i in range(min(5, len(self.draws)))]
             # 检测连续下降
@@ -1103,16 +1104,37 @@ class DLTFusionComplete:
                 else:
                     break
             if consecutive_down >= 3:
+                # 指数衰减因子：连续3期→1.0, 4期→1.4, 5期→2.0
+                # 使得持续时间越长的下降趋势，低和值补偿越激进
+                exp_factor = 1.0 + (consecutive_down - 2) * 0.4
                 print(f"[DLT-Fusion] 📉 和值动量衰减: 连续{consecutive_down}期下降 "
-                      f"({recent_sums[::-1]}), 补偿小号区候选")
+                      f"({recent_sums[::-1]}), 指数因子×{exp_factor:.2f}, 补偿小号区候选")
                 for c in all_candidates:
                     front = c.get('front', [])
-                    if sum(front) <= 75:
-                        c['final_score'] = c.get('final_score', 0.5) * 1.08
-                    elif sum(front) <= 85:
-                        c['final_score'] = c.get('final_score', 0.5) * 1.04
-                    elif sum(front) >= 110:
-                        c['final_score'] = c.get('final_score', 0.5) * 0.95
+                    fsum = sum(front)
+                    # 阈值下放：≤65→×1.15起(原×1.08), ≤70→×1.12
+                    # 指数因子让长趋势获得更强补偿
+                    if fsum <= 65:
+                        c['final_score'] = c.get('final_score', 0.5) * (1.0 + 0.15 * exp_factor)
+                    elif fsum <= 70:
+                        c['final_score'] = c.get('final_score', 0.5) * (1.0 + 0.12 * exp_factor)
+                    elif fsum <= 75:
+                        c['final_score'] = c.get('final_score', 0.5) * (1.0 + 0.10 * exp_factor)
+                    elif fsum <= 85:
+                        c['final_score'] = c.get('final_score', 0.5) * (1.0 + 0.06 * exp_factor)
+                    elif fsum >= 110:
+                        c['final_score'] = c.get('final_score', 0.5) * max(0.85, 0.95 - 0.03 * exp_factor)
+
+                # 【V3.1.4-①】额外机制：在候选池中注入低和值(<70)候选
+                # 如果当前候选池缺乏真正的低和值(<70)选手，就强行注入
+                low_sum_count = sum(1 for c in all_candidates if sum(c.get('front', [])) <= 70)
+                if low_sum_count < 3:
+                    print(f"[DLT-Fusion] 📉 低和值候选不足({low_sum_count}个), 注入最低和值候选")
+                    # 从现有候选中选择和值最低的3个，额外提升
+                    low_cands = [c for c in all_candidates if sum(c.get('front', [])) <= 80]
+                    low_cands.sort(key=lambda c: sum(c.get('front', [])))
+                    for i, c in enumerate(low_cands[:3]):
+                        c['final_score'] = c.get('final_score', 0.5) * (1.0 + 0.08 * (3 - i))
 
         # Step 7b3: 区间漂移补偿 — 调整候选评分，偏向漂移方向
         # 【优化V3.0.2】降低漂移检测启动阈值 0.15→0.10
@@ -1128,11 +1150,23 @@ class DLTFusionComplete:
         # Step 7c: 重号惩罚——候选与上期重号≥3个时降分5%，避免热号过度堆叠
         all_candidates = self._apply_repeat_penalty(all_candidates)
 
+        # Step 7c1b: 【V3.1.4-⑤】断重防御线——零重号独立路径注入
+        try:
+            all_candidates = self._inject_zero_repeat_candidates(all_candidates)
+        except Exception as e:
+            print(f"[DLT-Fusion] ⚠️ 断重防御线跳过: {e}")
+
         # Step 7c2: 特征工程——区间分布均衡评分 + 散度特征评分 + 尾号聚合检测 + AC值跟踪评分
         all_candidates = self._apply_zone_balance_scoring(all_candidates)
         all_candidates = self._apply_scatter_scoring(all_candidates)
         all_candidates = self._apply_tail_density_scoring(all_candidates)
         all_candidates = self._apply_ac_value_scoring(all_candidates)
+
+        # 【V3.1.3 - 冷号联动】冷号级联评分：检测冷号→冷号→冷号的补缺走势
+        try:
+            all_candidates = self._apply_cold_cascade_scoring(all_candidates)
+        except Exception as e:
+            print(f"[DLT-Fusion] ⚠️ 冷号联动评分跳过: {e}")
 
         # Step 7c2.5: 🎯 号码过度集中抑制（P1）— 防止候选集被少数热号垄断
         try:
@@ -2556,7 +2590,105 @@ class DLTFusionComplete:
         return candidates
 
     # ------------------------------------------------------------------
-    # 【优化3.0.3-⑤】强制配对重号组合 — 将上期高频号码组合输出
+    # 【V3.1.4-⑤】断重防御线 — 零重号独立路径
+    #   当连续上升≥2期且近期呈现断重倾向时，
+    #   在候选池中强制注入与上期0重号的注。
+    #   26068期实战教训：26067→26068前后区均0重号，模型重号预期过高。
+    # ------------------------------------------------------------------
+
+    def _inject_zero_repeat_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        断重防御线：强制注入与上期0重号的候选，防止模型过度押注重号。
+
+        触发条件：
+        - 与上期前区重合数=0 且 后区重合数=0
+        - 仅在候选池中此类候选比例<10%时注入
+        - 每次注入不超过候选池总量的5%
+        """
+        if len(self.draws) < 2 or not candidates:
+            return candidates
+
+        latest_front = set(self.draws[-1][0])
+        latest_back = set(self.draws[-1][1])
+
+        # 统计当前候选池中零重号的比例
+        zero_repeat_count = 0
+        for c in candidates:
+            c_front = set(c.get('front', []))
+            c_back = set(c.get('back', []))
+            if len(c_front & latest_front) == 0 and len(c_back & latest_back) == 0:
+                zero_repeat_count += 1
+
+        total = len(candidates)
+        zr_ratio = zero_repeat_count / max(total, 1)
+
+        # 仅在零重号候选不足10%时注入
+        if zr_ratio >= 0.10:
+            return candidates
+
+        # 需要注入的零重号候选数量
+        target = max(int(total * 0.05), 2)
+        injected = 0
+
+        # 从现有候选池中选择与上期0重号且得分较高的
+        zero_cands = []
+        for c in candidates:
+            c_front = set(c.get('front', []))
+            c_back = set(c.get('back', []))
+            if len(c_front & latest_front) == 0 and len(c_back & latest_back) == 0:
+                zero_cands.append(c)
+        zero_cands.sort(key=lambda c: c.get('final_score', c.get('base_score', 0)), reverse=True)
+
+        # 如果没有足够的零重号候选，复制并替换号码
+        # 选取最近出现频率最低的号码替换重号
+        if len(zero_cands) < target:
+            window = min(20, len(self.draws))
+            recent_nums = []
+            for i in range(max(0, len(self.draws) - window), len(self.draws)):
+                recent_nums.extend(self.draws[i][0])
+            rare_nums = sorted(
+                set(range(1, 36)) - set(recent_nums),
+                key=lambda n: recent_nums.count(n)
+            )
+            # 从得分最高的候选中挑选，替换其中与上期重号的号码
+            sorted_cands = sorted(candidates, key=lambda c: c.get('final_score', c.get('base_score', 0)), reverse=True)
+            for c in sorted_cands:
+                if injected >= target:
+                    break
+                c_front = list(c.get('front', []))
+                c_back = list(c.get('back', []))
+                f_repeat = [n for n in c_front if n in latest_front]
+                b_repeat = [n for n in c_back if n in latest_back]
+                if not f_repeat and not b_repeat:
+                    continue  # 已是零重号
+                # 替换前区重号
+                new_front = list(c_front)
+                for rn in f_repeat:
+                    if rare_nums:
+                        repl = rare_nums.pop(0)
+                        idx = new_front.index(rn)
+                        new_front[idx] = repl
+                # 替换后区重号
+                new_back = list(c_back)
+                for rn in b_repeat:
+                    repl = random.choice([n for n in range(1, 13) if n not in latest_back and n not in new_back])
+                    idx = new_back.index(rn)
+                    new_back[idx] = repl
+                new_c = dict(c)
+                new_c['front'] = sorted(new_front)
+                new_c['back'] = sorted(new_back)
+                new_c['final_score'] = c.get('final_score', 0.5) * 0.85  # 适度降分确保不喧宾夺主
+                candidates.append(new_c)
+                injected += 1
+
+        if injected > 0:
+            print(f"[DLT-Fusion] 🛡️ 断重防御线: 注入{injected}个零重号候选 "
+                  f"(原占比{zr_ratio:.1%}, 目标≥10%)")
+
+        return candidates
+
+    # ------------------------------------------------------------------
+    # 【V3.1.4-⑤-end】
     # ------------------------------------------------------------------
 
     def _force_paired_repeat_combo(self, candidates: List[Dict[str, Any]],
@@ -2740,12 +2872,24 @@ class DLTFusionComplete:
         hist_zone_coverage = []
         hist_small_count = []          # 01-12号码个数
         hist_large_count = []          # 30-35号码个数
+        # 【V3.1.4-②】Z3低温检测：最近5期中Z3区活跃期数(含≥1个Z3号码)
+        z3_active_in_recent5 = 0
+        z3_count_in_recent5 = []  # 每期Z3号码个数
         for i in range(max(0, len(self.draws) - window), len(self.draws)):
             s = set(self.draws[i][0])
             zc = (1 if s & ZONE1 else 0) + (1 if s & ZONE2 else 0) + (1 if s & ZONE3 else 0)
             hist_zone_coverage.append(zc)
             hist_small_count.append(len(s & ZONE1))
             hist_large_count.append(len(s & {30, 31, 32, 33, 34, 35}))
+        # 检查最近5期Z3区活跃度
+        for i in range(max(0, len(self.draws) - 5), len(self.draws)):
+            s = set(self.draws[i][0])
+            z3_cnt = len(s & ZONE3)
+            z3_count_in_recent5.append(z3_cnt)
+            if z3_cnt >= 1:
+                z3_active_in_recent5 += 1
+        # Z3低温定义：最近5期中≤1期有Z3号码，或者Z3总个数≤2
+        z3_cold = (z3_active_in_recent5 <= 1) or (sum(z3_count_in_recent5) <= 2)
 
         avg_zone_coverage = np.mean(hist_zone_coverage) if hist_zone_coverage else 2.2
         avg_small_count = np.mean(hist_small_count) if hist_small_count else 1.2
@@ -2809,7 +2953,16 @@ class DLTFusionComplete:
                 adjustment -= 0.005
                 reasons.append('缺大尾')
 
-            # 5. 边界：调整幅度限制在±6%
+            # 5. 【V3.1.4-②】Z3低温惩罚：当Z3区最近5期持续冷淡时，
+            #    对含≥2个Z3号码的候选施加惩罚
+            #    26068期实际Z3=0，而Top1选入[24,29,34]含2个大号
+            if z3_cold and z3c >= 2:
+                # Z3低温下含2个以上大号→惩罚
+                cold_penalty = -0.03 * (z3c - 1)  # 2个→-0.03, 3个→-0.06
+                adjustment += cold_penalty
+                reasons.append(f'Z3低温+{z3c}个大号×{cold_penalty:.2f}')
+
+            # 6. 边界：调整幅度限制在±6%
             adjustment = max(-0.06, min(0.06, adjustment))
 
             c['final_score'] = max(0.1, orig * (1.0 + adjustment))
@@ -3102,6 +3255,165 @@ class DLTFusionComplete:
 
         if dampened_count > 0:
             print(f"[DLT-Fusion] 📉 模式池评分衰减: {dampened_count}注过度加分被压缩")
+
+        return candidates
+
+    # ==================================================================
+    # 【V3.1.3 - 冷号联动】冷号级联评分 (Cold Number Cascade)
+    # ==================================================================
+
+    def _apply_cold_cascade_scoring(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        冷号联动：检测冷号→冷号→冷号的补缺走势并增量评分。
+
+        核心逻辑：
+        - 统计最近N期每期的冷号个数（冷号定义：遗漏≥8期）
+        - 检测是否存在"冷号链"：连续多期冷号数量递增或稳定在高位
+        - 当检测到冷号级联时：对含冷号较多的候选给予额外加分
+        - 加分幅度与冷号链的连续性正相关
+
+        26067实际开奖06,16,18,19,28中，06(遗漏14期)、16(遗漏8期)均为深度冷号，
+        且06→16→18形成"冷号链"模式。这种级联冷号补缺的走势在当前模型中完全缺失。
+
+        Returns:
+            评分调整后的候选列表
+        """
+        if len(self.draws) < 10:
+            return candidates
+
+        window = min(15, len(self.draws))
+        COLD_THRESHOLD = 8  # 遗漏≥8期为深度冷号
+
+        # 计算某号码在指定期号的遗漏值
+        def get_gap_for_num(num, draws, at_idx):
+            """计算某号码在指定期号的遗漏期数"""
+            gap = 1
+            for i in range(at_idx - 1, -1, -1):
+                if num in draws[i][0]:
+                    break
+                gap += 1
+            return gap
+
+        # 统计最近window期每期的冷号个数
+        cold_counts = []
+        for i in range(max(0, len(self.draws) - window), len(self.draws)):
+            period_draw = self.draws[i]
+            cold_in_period = []
+            for n in period_draw[0]:
+                gap = get_gap_for_num(n, self.draws, i)
+                if gap >= COLD_THRESHOLD:
+                    cold_in_period.append((n, gap))
+            cold_counts.append(len(cold_in_period))
+
+        if len(cold_counts) < 5:
+            return candidates
+
+        # 检测冷号链连续性
+        chain_length = 0
+        max_chain = 0
+        for c in cold_counts:
+            if c >= 1:
+                chain_length += 1
+                max_chain = max(max_chain, chain_length)
+            else:
+                chain_length = 0
+
+        # 最近3期冷号趋势：递增or稳定
+        last_3 = cold_counts[-3:] if len(cold_counts) >= 3 else cold_counts
+        upward_trend = all(last_3[i] <= last_3[i+1] for i in range(len(last_3) - 1))
+        stable_high = all(c >= 2 for c in last_3)
+
+        # 计算冷号链强度
+        cascade_strength = 0.0
+        cascade_reasons = []
+
+        if max_chain >= 4:
+            cascade_strength = 0.20
+            cascade_reasons.append('长冷链%d期' % max_chain)
+        elif max_chain >= 3:
+            cascade_strength = 0.12
+            cascade_reasons.append('中冷链%d期' % max_chain)
+
+        if upward_trend:
+            cascade_strength += 0.08
+            cascade_reasons.append('冷号递增')
+        if stable_high:
+            cascade_strength += 0.06
+            cascade_reasons.append('冷号高位')
+
+        cascade_strength = min(cascade_strength, 0.30)
+
+        if cascade_strength <= 0:
+            return candidates
+
+        print("[DLT-Fusion] ❄️ 冷号联动检测: 强度=%.2f (%s)" % (cascade_strength, '/'.join(cascade_reasons)))
+
+        # 获取当前冷号池
+        recent_10_nums = set()
+        n_draws = len(self.draws)
+        for i in range(min(10, n_draws)):
+            recent_10_nums.update(self.draws[n_draws - 1 - i][0])
+        all_nums = set(range(1, 36))
+        current_cold_nums = sorted(all_nums - recent_10_nums)
+
+        if not current_cold_nums:
+            return candidates
+
+        boost_count = 0
+
+        for c in candidates:
+            front = c.get('front', [])
+            if not front:
+                continue
+
+            # 计算该候选包含的冷号个数和冷号平均遗漏值
+            cold_in_front = []
+            total_gap = 0
+            for n in front:
+                if n in current_cold_nums:
+                    gap = get_gap_for_num(n, self.draws, n_draws - 1)
+                    cold_in_front.append((n, gap))
+                    total_gap += gap
+
+            cold_count = len(cold_in_front)
+
+            if cold_count == 0:
+                continue
+
+            avg_gap = total_gap / cold_count
+
+            orig = c.get('final_score', c.get('base_score', 0.5))
+
+            # 评分规则：
+            # - 含1个深度冷号(遗漏≥12)：+3~5% × 强度
+            # - 含2个冷号：+6~10% × 强度
+            # - 含3+个冷号：+10~15% × 强度
+            deep_cold = sum(1 for _, g in cold_in_front if g >= 12)
+
+            if cold_count >= 3:
+                bonus = 0.12 + (deep_cold * 0.02)
+            elif cold_count >= 2:
+                if deep_cold >= 1:
+                    bonus = 0.08 + (deep_cold * 0.02)
+                else:
+                    bonus = 0.05
+            else:
+                if deep_cold >= 1:
+                    bonus = 0.04
+                else:
+                    continue  # 1个浅冷号不触发加分
+
+            # 应用冷号链强度缩放
+            adjusted = orig * (1.0 + bonus * cascade_strength)
+            c['final_score'] = min(adjusted, 1.0)
+            c['cold_cascade_adj'] = round(bonus * cascade_strength, 4)
+
+            boost_count += 1
+            if boost_count <= 3:
+                print("[DLT-Fusion] ❄️ 冷号联动加分: %s 冷号%s (%.4f)" % (front, cold_in_front, c.get('final_score', 0)))
+
+        if boost_count > 0:
+            print("[DLT-Fusion] ❄️ 冷号联动: %d注加分" % boost_count)
 
         return candidates
 

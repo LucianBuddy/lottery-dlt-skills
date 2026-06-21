@@ -1,9 +1,9 @@
 {
-  "skill_name": "大乐透预测 V3.1.2",
-  "version": "3.1.2",
-  "release_date": "2026-06-16",
-  "reference_sync_version": "3.1.2",
-  "reference_sync_date": "2026-06-16",
+  "skill_name": "大乐透预测 V3.1.3",
+  "version": "3.1.3",
+  "release_date": "2026-06-18",
+  "reference_sync_version": "3.1.3",
+  "reference_sync_date": "2026-06-18",
   "author": "J.A.R.V.I.S.",
   "description": "大乐透（DLT）智能预测 - 六池+趋势池修正+尾号聚合+AC值跟踪+偏差校准",
   "data_source": {
@@ -33,6 +33,7 @@
       {"name": "span", "weight": 0.12, "desc": "最大号与最小号的差值"},
       {"name": "consecutive", "weight": 0.10, "desc": "相邻号码间隔分布"},
       {"name": "multi_consecutive", "weight": 0.15, "desc": "三联号(≥3个连续)簇检测增强(V3.1.1)"},
+      {"name": "cross_period_consecutive", "weight": 0.08, "desc": "跨期连号混合模式：隔期重号+邻号联动(V3.1.3新增)"},
       {"name": "sum", "weight": 0.12, "desc": "5号之和，按5分组距"},
       {"name": "parity", "weight": 0.10, "desc": "奇偶比分布"},
       {"name": "repeat", "weight": 0.15, "desc": "与上期重复的号码数"},
@@ -41,7 +42,7 @@
       {"name": "prime", "weight": 0.07, "desc": "1-35中11个质数的命中数"},
       {"name": "ac_value", "weight": 0.12, "desc": "算术复杂度"}
     ],
-    "integration": "模式池(第7池): 从高频模式反推号码集合; 评分增强: base + 模式匹配度×20%(V3.1.2校准)"
+    "integration": "模式池(第7池): 从高频模式反推号码集合; 评分增强: base + 模式匹配度×20%(V3.1.2校准); 跨期连号混合模式评分+冷号联动级联评分(V3.1.3新增)"
   },
   "neural_models": {
     "tabnet": {"status": "active", "input_dim": 12, "hidden_dim": 64, "framework": "PyTorch"},
@@ -68,6 +69,9 @@
     "hot_decay_bottleneck": "热号衰减瓶颈：连续出现≥3期号码×0.7权重（V3.1.1新增）",
     "back_segment_coverage": "后区5-8段强制至少2个号码（V3.1.1新增）",
     "pattern_pool_calibration": "模式池评分校准：硬编码分0.6→0.52，boost_weight 0.35→0.20，增量压缩50%（V3.1.2新增）",
+    "back_hot_cascade": "冷三联因子：后区连续2期热号组合时强制偏移冷号30%（V3.1.3新增）",
+    "cross_period_consecutive": "跨期连号混合模式：检测隔期重号+邻号的联动（V3.1.3新增）",
+    "cold_cascade_scoring": "冷号联动级联评分：检测冷号→冷号→冷号链式补缺走势，含3+冷号的候选加分×强度（V3.1.3新增）",
     "compound_zone_quota": "复式前区池20%/区最低配额+后区段覆盖1-4/5-8/9-12（V3.0.3修复）"
   },
   "constraint_engine": {
