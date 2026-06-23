@@ -1,9 +1,9 @@
 {
-  "skill_name": "大乐透预测 V3.1.3",
-  "version": "3.1.3",
-  "release_date": "2026-06-18",
-  "reference_sync_version": "3.1.3",
-  "reference_sync_date": "2026-06-18",
+  "skill_name": "大乐透预测 V3.1.5",
+  "version": "3.1.5",
+  "release_date": "2026-06-23",
+  "reference_sync_version": "3.1.5",
+  "reference_sync_date": "2026-06-23",
   "author": "J.A.R.V.I.S.",
   "description": "大乐透（DLT）智能预测 - 六池+趋势池修正+尾号聚合+AC值跟踪+偏差校准",
   "data_source": {

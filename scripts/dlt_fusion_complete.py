@@ -1047,6 +1047,116 @@ class DLTFusionComplete:
         # Step 3: 后区融合
         back_recs = self.get_back_recommendations()
 
+        # 【V3.1.5-②】后区数字多样性过滤 — 缓解单个号码过度锚定（如04）
+        # 26069期实战：back_recs中04出现3/5次，实际03和10全漏
+        # 限制：任意后区号码在Top5中最多出现2次
+        try:
+            if len(back_recs) >= 5:
+                from collections import Counter as _BackC
+                filtered_back = []
+                back_num_usage = _BackC()
+                overused_nums = set()  # 被标记为过度使用的号码
+                for br in back_recs:
+                    br_key = tuple(sorted(br))
+                    num1, num2 = br_key
+                    if br_key in [(tuple(b) for b in filtered_back)]:
+                        continue
+                    if back_num_usage[num1] >= 2 or back_num_usage[num2] >= 2:
+                        overused_nums.add(num1 if back_num_usage[num1] >= 2 else num2)
+                        continue
+                    filtered_back.append(list(br_key))
+                    back_num_usage[num1] += 1
+                    back_num_usage[num2] += 1
+                    if len(filtered_back) >= 5:
+                        break
+                # 如果过滤后不足5组，从原始back_recs中补充不含overused_nums的配对
+                if len(filtered_back) < 5:
+                    for br in back_recs:
+                        if len(filtered_back) >= 5:
+                            break
+                        if tuple(br) in [tuple(b) for b in filtered_back]:
+                            continue
+                        num1, num2 = br
+                        if num1 in overused_nums or num2 in overused_nums:
+                            continue
+                        filtered_back.append(list(br))
+                        back_num_usage[num1] += 1
+                        back_num_usage[num2] += 1
+                # 补充后仍然不足5组时，用不受overused_nums限制的新配对补齐
+                if len(filtered_back) < 5:
+                    for br in back_recs:
+                        if len(filtered_back) >= 5:
+                            break
+                        if tuple(br) in [tuple(b) for b in filtered_back]:
+                            continue
+                        num1, num2 = br
+                        if back_num_usage[num1] < 2 and back_num_usage[num2] < 2:
+                            filtered_back.append(list(br))
+                            back_num_usage[num1] += 1
+                            back_num_usage[num2] += 1
+                        elif len(filtered_back) < 4 and (back_num_usage[num1] < 3 and back_num_usage[num2] < 3):
+                            # 极端情况：大部分配对含同一个热号，允许第三个
+                            filtered_back.append(list(br))
+                            back_num_usage[num1] += 1
+                            back_num_usage[num2] += 1
+                # 如果过滤后仍过度依赖某个数字（如04），从未使用的配对中强制补充不含该数字的
+                if len(filtered_back) >= 3:
+                    overused = [n for n, c in back_num_usage.items() if c >= len(filtered_back) * 0.5]
+                    if overused:
+                        # 找不含overused数字的配对
+                        for br in back_recs:
+                            if len(filtered_back) >= 5:
+                                break
+                            if tuple(br) in [tuple(b) for b in filtered_back]:
+                                continue
+                            if not any(n in overused for n in br):
+                                filtered_back.append(list(br))
+                                for n in br:
+                                    back_num_usage[n] += 1
+                if len(filtered_back) >= 3 and filtered_back != back_recs[:len(filtered_back)]:
+                    old_recs = back_recs
+                    back_recs = filtered_back[:5]
+                    print(f"[DLT-Fusion] 🎲 后区多样性过滤: {old_recs} → {back_recs}")
+        except Exception as e:
+            print(f"[DLT-Fusion] ⚠️ 后区多样性过滤跳过: {e}")
+
+        # 【V3.1.5-③】后区直接重号路径注入 — 确保后区上期号码有机会被选入
+        # 26069期实战：上期后区06,10，实际开出10重号，但5注中无一包含10
+        try:
+            if len(self.draws) >= 2:
+                prev_back = self.draws[-1][1]  # 上期后区
+                # 检查back_recs中是否有任何一注包含上期后区号码
+                back_repeat_included = False
+                for br in back_recs:
+                    if any(n in prev_back for n in br):
+                        back_repeat_included = True
+                        break
+                if not back_repeat_included:
+                    # 上期后区号码完全不在候选后区中，强制注入1-2组
+                    # 方式：上期后区保留1个号码+常见配对
+                    for n in prev_back:
+                        # 对每个上期后区号码，找一个最佳配对
+                        best_partner = None
+                        best_score = -1
+                        for p in range(1, 13):
+                            if p == n:
+                                continue
+                            pair_score = sum(1 for d in self.draws[-10:] if {n, p}.issubset(d[1]))
+                            if pair_score > best_score:
+                                best_score = pair_score
+                                best_partner = p
+                        if best_partner is not None:
+                            new_pair = sorted([n, best_partner])
+                            # 检查是否已存在
+                            already_exists = any(list(b) == new_pair for b in back_recs)
+                            if not already_exists:
+                                back_recs.insert(0, new_pair)
+                                print(f"[DLT-Fusion] 🎯 后区重号路径注入: {new_pair} (上期后区{n}的延续)")
+                    # 确保不超过5个
+                    back_recs = back_recs[:5]
+        except Exception as e:
+            print(f"[DLT-Fusion] ⚠️ 后区重号路径跳过: {e}")
+
         # Step 4: 博弈论优化
         gt_scores = self._apply_game_theory(all_groups, pool_candidates)
 
@@ -1905,7 +2015,10 @@ class DLTFusionComplete:
         ZONE2 = set(range(13, 25))
         ZONE3 = set(range(25, 36))
 
+        # 【V3.1.5】Z2中段覆盖增强：增加Z2中间段(16-24)强制覆盖
+        # 26069期实战教训：实际12,19,21,24,29中21和24(Z2中段)全部漏掉
         boundary_nums = [14, 21, 28]
+        z2_mid_nums = [16, 17, 18, 19, 20, 21, 22, 23, 24]
         all_primes = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31}
 
         # 最近3期出现的号码
@@ -1929,6 +2042,22 @@ class DLTFusionComplete:
         top_missing = [n for n, _ in sorted_missing[:2]]
 
         # 需要检查的候选号码
+        # 【V3.1.5-①】Z2中段盲区检测：如果候选集Z2中段(16-24)覆盖率<3个号，强制补充
+        covered_z2_mid = set()
+        for c in candidates:
+            covered_z2_mid.update([n for n in c.get('front', []) if n in z2_mid_nums])
+        if len(covered_z2_mid) < 2:
+            # Z2中段严重不足，添加最热门的2个遗漏号
+            z2_mid_missing = [n for n in z2_mid_nums if n not in covered_z2_mid]
+            # 按历史频率排序，取最热门的遗漏号
+            z2_mid_freq = {n: sum(1 for d in self.draws[-30:] if n in d[0]) for n in z2_mid_missing}
+            z2_mid_to_add = sorted(z2_mid_missing, key=lambda n: -z2_mid_freq.get(n, 0))[:3]
+            if z2_mid_to_add:
+                print(f"[DLT-Fusion] 🔍 Z2中段覆盖缺失({len(covered_z2_mid)}个), 强制补充{z2_mid_to_add}")
+                for n in z2_mid_to_add:
+                    if n not in missing_nums:
+                        missing_nums.append(n)
+
         check_nums = list(set(boundary_nums + missed_primes + top_missing))
 
         # 统计当前候选集中每个号码的出现次数
