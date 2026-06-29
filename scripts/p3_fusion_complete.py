@@ -631,18 +631,11 @@ class DLTFusionComplete:
             self.sfe = StrategyFusionEngine(self.draws, n_groups=5)
             self.pool_sampler = MultiPoolSampler(self.draws)
             # 同步GA参数到pool_sampler
-            # P3: suppressed
-            # self.pool_sampler.genetic_optimizer.population_size = self._ga_pop
-            # P3: suppressed
-            # self.pool_sampler.genetic_optimizer.generations = self._ga_gen
-            # P3: suppressed
-            # self.pool_sampler.genetic_optimizer.elite_size = self._ga_elite
+            self.pool_sampler.genetic_optimizer.population_size = self._ga_pop
+            self.pool_sampler.genetic_optimizer.generations = self._ga_gen
+            self.pool_sampler.genetic_optimizer.elite_size = self._ga_elite
             self.back_fusion = BackZoneFusion(self.draws)
-            # P3: 首次GA初始化只打印一次
-            import io, contextlib
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.genetic = DLTGeneticOptimizer(self.draws)
-            print("[DLT-Fusion] 🧬 遗传算法初始化完成")
+            self.genetic = DLTGeneticOptimizer(self.draws)
             self.stats = DLTStatisticsAnalyzer(self.draws)
             self.pattern_recognizer = DLTPatternRecognizer(self.draws)
             self.pattern_recognizer.build_distributions(window=500)
@@ -1669,16 +1662,12 @@ class DLTFusionComplete:
         except Exception as e:
             if not getattr(self, '_silent', False):
                 print(f"[DLT-Fusion] \u26a0\ufe0f 候选过滤跳过: {e}")
-        if not all_candidates:
-            all_candidates = []
 
         # Step 6a: 🎯 奇偶比分布补充 — 确保候选覆盖所有常见奇偶比模式
         try:
             all_candidates = self._enrich_parity_distribution(all_candidates)
         except Exception as e:
             print(f"[DLT-Fusion] ⚠️ 奇偶比补充跳过: {e}")
-        if not all_candidates:
-            all_candidates = []
 
         # Step 6b: 📊 和值中间带补充（P4）— 当候选集和值分布缺乏中间带(100-120)时补偿
         try:
@@ -1968,59 +1957,248 @@ class DLTFusionComplete:
             unique = []
 
         # Step 8b: 【3】保存候选池快照（供开奖后反事实分析）
-        self._capture_candidate_snapshot(unique, include_compound)
-        candidates = unique[:] if unique else []
+        self._capture_candidate_snapshot(unique)
 
-        # P1: 候选为空时, 用热冷混合生成兜底方案
-        if not candidates:
-            try:
-                from collections import Counter as _HC
-                _hot = _HC()
-                for _d in self.draws[-30:]:
-                    _hot.update(_d[0])
-                hot_nums = sorted([n for n, _ in _hot.most_common(7)])
-                cold_nums = sorted(set(range(1,36)) - set(hot_nums))
-                import random as _rd
-                _rd.seed(42)
-                for _ in range(5):
-                    front = sorted(_rd.sample(hot_nums, 3) + _rd.sample(cold_nums, 2))
-                    back = sorted(_rd.sample(range(1,13), 2))
-                    candidates.append({
-                        'front': front, 'back': back,
-                        'final_score': 0.5, 'hit_probability': 0.0,
-                        'is_fallback': True
-                    })
-                print(f"[DLT-Fusion] 🛠️ 兜底: 生成5注热冷混合")
-            except Exception:
-                pass
-
-
-        # 构建最终结果
-        try:
-            _final = candidates[:min(top_n, len(candidates))] if candidates else []
-        except Exception:
-            _final = []
-        result = {
-            "single_bets": _final,
-            "period": self._get_latest_period(),
-        }
-        if include_compound:
-            try:
-                result["compound_bets"] = self.generate_compound_bets("all", n_per_type=2)
-            except Exception:
-                pass
-
-        return result
-
-    def _capture_candidate_snapshot(self, candidates, include_compound=False):
+    def _capture_candidate_snapshot(self, candidates):
         """保存候选池快照供分析"""
         self._last_candidate_snapshot = candidates
         if not candidates:
             return
-        # 简化: 仅保存快照, 评分/过滤/排序已在predict主线完成
+
+        # Step 9: 防御性去重——确保每注内的前区和后区号码唯一
         for bet in candidates:
-            bet['front'] = sorted(set(bet['front']))[:5]
-            bet['back'] = sorted(set(bet['back']))[:2]
+            # 前区去重排序
+            bet['front'] = sorted(set(bet['front']))
+            # 后区去重排序
+            bet['back'] = sorted(set(bet['back']))
+            # 补足到5个前区号码（从候选集中按频率加权填充，非纯随机）
+            if len(bet['front']) < 5:
+                # 统计所有候选中出现频率最高的号码
+                from collections import Counter as _FillC
+                all_front_nums = _FillC()
+                for c in candidates:
+                    for n in c.get('front', []):
+                        all_front_nums[n] += 1
+                candidates_ranked = [n for n, _ in all_front_nums.most_common()]
+                for fill in candidates_ranked:
+                    if len(set(bet['front'])) >= 5:
+                        break
+                    if fill not in bet['front']:
+                        bet['front'].append(fill)
+            bet['front'].sort()
+            # 补足到2个后区号码（从后区推荐中填充，非纯随机）
+            if len(bet['back']) < 2:
+                fill_pool = []
+                for br in back_recs:
+                    fill_pool.extend(br)
+                if not fill_pool:
+                    fill_pool = list(range(1, 13))
+                for fill in fill_pool:
+                    if len(set(bet['back'])) >= 2:
+                        break
+                    if fill not in bet['back']:
+                        bet['back'].append(fill)
+            bet['back'].sort()
+
+        # Step 10: 【缺口3】最终排名 + 发散度控制选Top
+        candidates.sort(key=lambda x: x['final_score'], reverse=True)
+        diverse_top5 = self._diverse_topk_selection(candidates, k=5, min_jaccard=0.5)
+        # 将diverse Top5提升到candidates最前面，保持其余排序不变
+        diverse_set = {tuple(c.get('front', [])) for c in diverse_top5}
+        rest = [c for c in candidates if tuple(c.get('front', [])) not in diverse_set]
+        candidates = diverse_top5 + rest
+        # 日志
+        overlap = max(
+            (0, *(len(set(candidates[0].get('front',[])) & set(c.get('front',[])))
+                  for c in candidates[1:5]))
+        ) if len(candidates) >= 5 else 0
+        print(f"[DLT-Fusion] \U0001f300 【3】发散度控制: 选5注, 最大重叠={overlap}号")
+
+        # Step 10-0: 【β】号码排除过滤
+        try:
+            candidates = self._apply_exclusion_filter(candidates)
+        except Exception:
+            pass
+
+        # Step 10a: 【1】pairwise共现惩罚
+        try:
+            candidates = self._apply_pairwise_penalty(candidates)
+        except Exception as e:
+            print(f"[DLT-Fusion] \u26a0\ufe0f 【1】pairwise跳过: {e}")
+
+        # Step 10b: 【B】不确定性量化
+        try:
+            uncertainty = self._estimate_uncertainty(candidates)
+            if uncertainty:
+                for idx, info in uncertainty.items():
+                    if idx < len(candidates):
+                        candidates[idx]['uncertainty'] = info['std']
+                        candidates[idx]['volatility'] = info['volatility']
+        except Exception as e:
+            print(f"[DLT-Fusion] \u26a0\ufe0f 【B】不确定性量化跳过: {e}")
+        self._last_uncertainty = uncertainty if uncertainty else {}
+
+        # Step 10c: 【Y】选择性预测
+        try:
+            u = getattr(self, "_last_uncertainty", {})
+            if u and self._should_skip_prediction(u):
+                from collections import Counter
+                hot = Counter()
+                for d in self.draws[-30:]:
+                    hot.update(d[0])
+                hot_ref = sorted([n for n, _ in hot.most_common(5)])
+                fallback = {"front": hot_ref, "back": [1, 12],
+                           "final_score": 0.6, "is_fallback": True,
+                           "hit_probability": 0.0, "front_prob": 0.0, "back_prob": 0.0}
+                candidates = [fallback] + candidates[1:6]
+                print(f"[DLT-Fusion] 🚫 【Y】替换为热号: {hot_ref}")
+        except Exception as e:
+            pass
+
+        for bet in candidates:
+            try:
+                probs = self._calc_probability(bet['front'], bet['back'])
+                bet['hit_probability'] = probs['combined']
+                bet['front_prob'] = probs['front']
+                bet['back_prob'] = probs['back']
+            except Exception:
+                bet["hit_probability"] = 0.0
+                bet["front_prob"] = 0.0
+                bet["back_prob"] = 0.0
+
+        # Step 10d: 【Z】Top1解释
+        try:
+            if candidates:
+                candidates[0]["explanation"] = self._explain_top1(candidates[0], back_recs)
+                expl = candidates[0].get("explanation", "")
+                if expl:
+                    print(f"[DLT-Fusion] 📖 【Z】Top1: {expl}")
+        except Exception:
+            pass
+
+        result = {
+            "single_bets": candidates[:top_n],
+            "period": self._get_latest_period(),
+        }
+
+        if include_compound:
+            compound = self.generate_compound_bets("all", n_per_type=2)
+            result["compound_bets"] = compound
+
+            # 添加胆拖投注方案（多池融合版）
+            # 添加胆拖投注方案（多池融合版）
+            try:
+                all_dantuo = []
+                # 1胆/2胆/3胆 三种配置，拖码池大小逐步缩小
+                configs = [(1, 10), (2, 8), (3, 6)]
+                for ndan, tsize in configs:
+                    schemes = self.generate_dantuo_bets(
+                        dan_front=None,
+                        tuo_front_size=tsize,
+                        n_sets=2,
+                        n_dan_front=ndan,
+                    )
+                    for s in schemes:
+                        if s not in all_dantuo:
+                            all_dantuo.append(s)
+
+                if all_dantuo:
+                    all_dantuo.sort(key=lambda x: -x['hit_probability'])
+                    result['dan_tuo_bets'] = {
+                        'dantuo_fusion': {
+                            'name': '🎯 多池融合胆拖',
+                            'schemes': all_dantuo[:6],
+                        }
+                    }
+                    print(f"[DLT-Fusion] 📊 多池融合胆拖方案生成: {len(all_dantuo)}组")
+            except Exception as e:
+                print(f"[DLT-Fusion] ⚠️ 胆拖方案生成跳过: {e}")
+
+        # 输出简要摘要
+        if top_n > 0 and candidates:
+            top = candidates[0]
+            print(f"[DLT-Fusion] 🎯 Top1: {top['front']} + {top['back']}  "
+                  f"score={top['final_score']:.4f}  prob={top.get('hit_probability', 0):.1f}%")
+
+        # Step 11: 📦 预测结果存档
+        try:
+            from prediction_store import store_prediction
+            period = self._get_latest_period()
+            if period:
+                next_period = str(int(period) + 1)
+                store_prediction(
+                    next_period,
+                    candidates[:top_n],
+                    result.get('compound_bets') if include_compound else None,
+                    result.get('dan_tuo_bets'),  # 【V3.0.2】新增胆拖方案存档
+                )
+        except Exception as e:
+            print(f"[DLT-Fusion] ⚠️ 预测存档跳过: {e}")
+
+        # Step 12: 【C】在线学习 — 检测新开奖数据并增量训练
+        try:
+            self._online_update_if_needed()
+        except Exception as e:
+            print(f"[DLT-Fusion] ⚠️ 【C】在线学习跳过: {e}")
+
+        # Step 12b-0: 【2】跨期MLP惰性训练 + 评分
+        try:
+            if not getattr(self, '_mlp_trained', False):
+                self._build_cross_period_mlp()
+            if getattr(self, '_mlp_trained', False):
+                candidates = self._apply_mlp_score(candidates[:20] if len(candidates) > 20 else candidates)
+        except Exception as e:
+            print(f"[DLT-Fusion] ⚠️ 【2】MLP跳过: {e}")
+
+        # Step 12b: 【2】特征衰减跟踪 — 更新区分度评分
+        try:
+            if hasattr(self, '_last_features') and len(self._last_features) > 10:
+                from modules.ranking_feature_extractor import get_feature_decayer
+                get_feature_decayer().update(self._last_features, top_k=10)
+        except Exception as e:
+            pass
+
+        # 【方向5】基线对比
+        try:
+            import random as _rnd
+            _rnd.seed(42)
+            # 随机基线：生成5注随机号码
+            random_fronts = []
+            for _ in range(5):
+                rf = sorted(_rnd.sample(range(1, 36), 5))
+                rb = sorted(_rnd.sample(range(1, 13), 2))
+                random_fronts.append({'front': rf, 'back': rb, 'score': 0})
+            # 热号基线：取最近20期最热的5个前区+2个后区
+            from collections import Counter
+            recent_front = Counter()
+            recent_back = Counter()
+            for d in self.draws[-20:]:
+                for n in d[0]:
+                    recent_front[n] += 1
+                for n in d[1]:
+                    recent_back[n] += 1
+            hot_front = sorted(recent_front.keys(), key=lambda x: -recent_front[x])[:5]
+            hot_back = sorted(recent_back.keys(), key=lambda x: -recent_back[x])[:2]
+
+            result['baseline_comparison'] = {
+                'model_vs_random': '\u672c\u6a21\u578b\u57fa\u4e8e6\u6c60\u878d\u5408+\u795e\u7ecf\u7f51\u7edc',
+                'hot_baseline': f'\u70ed\u53f7: {hot_front} + {hot_back}',
+            }
+        except Exception:
+            pass
+
+        # 【P6】内存清理: predict完成后析构大对象
+        try:
+            if hasattr(self, 'neural_ensemble') and self.neural_ensemble is not None:
+                # 保存后释放训练器内存
+                if hasattr(self.neural_ensemble, 'models'):
+                    self.neural_ensemble.models = None
+                self.neural_ensemble = None
+        except Exception:
+            pass
+
+        return result
+
     def predict_with_details(self, top_n: int = 5, include_compound: bool = True) -> Dict[str, Any]:
         """返回预测+详细分析"""
         pred_result = self.predict(top_n, include_compound=include_compound)
@@ -2582,9 +2760,7 @@ class DLTFusionComplete:
                     })
 
         if new_cands:
-            preview = [c['front'] for c in new_cands[:3]]
-            more = f"...等{len(new_cands)}注" if len(new_cands) > 3 else ""
-            print(f"[DLT-Fusion] 🔍 盲区补充: +{len(new_cands)}个候选 {preview}{more}")
+            print(f"[DLT-Fusion] 🔍 盲区补充: +{len(new_cands)}个候选 {[c['front'] for c in new_cands]}")
             return candidates + new_cands
 
         return candidates
@@ -3450,10 +3626,6 @@ class DLTFusionComplete:
 
         filtered = []
         for c in candidates:
-            # P5: 兜底候选(is_fallback)跳过过滤
-            if c.get('is_fallback', False):
-                filtered.append(c)
-                continue
             c_front = set(c.get('front', []))
             c_back = set(c.get('back', []))
 

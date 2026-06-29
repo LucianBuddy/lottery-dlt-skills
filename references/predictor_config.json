@@ -1,0 +1,82 @@
+{
+  "skill": "dlt-lottery-prediction",
+  "version": "3.6.0",
+  "reference_sync_version": "3.6.0",
+
+  "ensemble": {
+    "weights": {
+      "gbr": 0.35,
+      "decision_tree": 0.25,
+      "ts_lr": 0.25,
+      "freq_baseline": 0.15
+    },
+    "min_total_weight": 0.3,
+    "blend_ratio": 0.25
+  },
+
+  "diversity": {
+    "min_jaccard": 0.5,
+    "threshold_decay": 0.1,
+    "jaccard_floor": 0.1
+  },
+
+  "feature_decay": {
+    "window": 20,
+    "threshold": 0.15,
+    "recheck_interval": 5
+  },
+
+  "memory_tiers_mb": [
+    {"min_mb": 800, "label": "充裕", "ga_pop": 30, "ga_gen": 15, "ga_elite": 5,
+     "neural": "full", "compound": "all", "dantuo": "all", "candidates": 60,
+     "zero_repeat": true, "cold_cascade": true},
+    {"min_mb": 500, "label": "中等", "ga_pop": 22, "ga_gen": 12, "ga_elite": 3,
+     "neural": "freq", "compound": "top60", "dantuo": "2dan", "candidates": 50,
+     "zero_repeat": true, "cold_cascade": true},
+    {"min_mb": 300, "label": "受限", "ga_pop": 18, "ga_gen": 10, "ga_elite": 3,
+     "neural": "skip", "compound": "6+3_7+2", "dantuo": "skip", "candidates": 40,
+     "zero_repeat": false, "cold_cascade": false},
+    {"min_mb": 0,   "label": "紧张", "ga_pop": 15, "ga_gen": 8, "ga_elite": 2,
+     "neural": "skip", "compound": "skip", "dantuo": "skip", "candidates": 30,
+     "zero_repeat": false, "cold_cascade": false}
+  ],
+
+  "scoring": {
+    "pattern_boost_weight": 0.20,
+    "neural_blend_ratio": 0.25,
+    "dt_blend_ratio": 0.15,
+    "final_score_floor": 0.50,
+    "sum_trend_threshold": 8,
+    "drift_confidence_min": 0.10,
+    "hot_bottleneck_consecutive": 3,
+    "hot_bottleneck_decay": 0.08,
+    "hot_bottleneck_floor": 0.7
+  },
+
+  "candidate_filter": {
+    "min_continuity": 2,
+    "sum_range_min": 60,
+    "sum_range_max": 150,
+    "min_active_zones": 2
+  },
+
+  "online_learning": {
+    "min_new_periods": 5,
+    "sliding_window": 2000,
+    "validation_periods": 5
+  },
+
+  "ts_predict": {
+    "memory_min_mb": 300,
+    "top_n_numbers": 16,
+    "top_n_candidates": 20,
+    "lr_max_iter": 200,
+    "lr_c": 0.5
+  },
+
+  "anomaly": {
+    "z_score_threshold": 3.0,
+    "chi2_threshold": 80,
+    "dup_check_window": 50
+  }
+}
